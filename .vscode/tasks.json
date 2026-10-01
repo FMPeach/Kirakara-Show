@@ -1,0 +1,56 @@
+{
+	"tasks": [
+		{
+			"label": "CMake: 构建",
+			"type": "shell",
+			"command": "cmake --build build",
+			"options": {
+				"cwd": "${workspaceFolder}"
+			},
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"problemMatcher": [
+				"$gcc"
+			],
+			"detail": "CMake 全量构建 (需先 cmake -S . -B build 配置过)"
+		},
+		{
+			"type": "cppbuild",
+			"label": "C/C++: g++.exe 生成活动文件",
+			"command": "C:/Program Files/mingw64/bin/g++.exe",
+			"args": [
+				"-fdiagnostics-color=always",
+				"-g",
+				"${file}",
+				"-o",
+				"${fileDirname}\\${fileBasenameNoExtension}.exe",
+				"-std=gnu++20",
+				"-I",
+				"${workspaceFolder}/include",
+				"-I",
+				"${workspaceFolder}/src"
+			],
+			"options": {
+				"cwd": "${workspaceFolder}"
+			},
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build",
+			"detail": "单文件编译（测试用），完整构建请用 CMake"
+		},
+		{
+			"label": "build show_host",
+			"type": "shell",
+			"command": "cmake --build build --target show_host",
+			"options": {
+				"cwd": "${workspaceFolder}"
+			},
+			"isBackground": false,
+			"group": "build"
+		}
+	],
+	"version": "2.0.0"
+}

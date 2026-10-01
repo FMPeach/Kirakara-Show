@@ -1,0 +1,27 @@
+# Build outputs
+/build/
+/build-*/
+/out/
+/dist/
+
+# Local/generated artifacts
+/artifacts/
+/.agents/
+/local-notes/
+/Testing/
+*.log
+*.tmp
+*.bak
+*.user
+
+# Generated media / smoke-test outputs
+*.png
+!images/*.png
+
+# IDE/editor noise
+/.vs/
+.DS_Store
+Thumbs.db
+
+# Local accidental scratch files
+/1
