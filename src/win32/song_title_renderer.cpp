@@ -666,6 +666,10 @@ void SongTitleRenderer::shutdown() {
     if (impl_) impl_->shutdown();
 }
 
+void SongTitleRenderer::invalidate_block_cache() noexcept {
+    if (impl_) impl_->clear_block_bitmap_cache();
+}
+
 bool SongTitleRenderer::attach_native_target(void* d2d_render_target) {
     return impl_ && impl_->attach(
         static_cast<ID2D1RenderTarget*>(d2d_render_target));

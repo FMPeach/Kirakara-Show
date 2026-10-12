@@ -20,6 +20,9 @@ public:
 
     [[nodiscard]] bool initialize();
     void shutdown();
+    // Drops whole-block bitmaps whose layout belongs to the previous song.
+    // Reusable glyph geometry and line metrics stay warm.
+    void invalidate_block_cache() noexcept;
     [[nodiscard]] bool attach_native_target(void* d2d_render_target);
     [[nodiscard]] bool render(const SongTitleConfig& config,
         Seconds project_time, Seconds lyric_fade_duration);

@@ -116,6 +116,8 @@ struct UnifiedStageRenderer::Impl {
     bool is_configured{};
     std::uint64_t rendered{};
     std::uint64_t dropped{};
+    std::uint64_t title_cache_generation{};
+    bool title_cache_generation_valid{};
     UnifiedStageVideoFrameIdentity cached_video_identity;
     Color cached_video_idle_color{};
     bool video_base_valid{};
@@ -129,6 +131,8 @@ struct UnifiedStageRenderer::Impl {
     void release_target_renderers() noexcept {
         if (target_renderers) target_renderers->shutdown();
         target_renderers.reset();
+        title_cache_generation = 0;
+        title_cache_generation_valid = false;
     }
 
     TargetRenderers* renderers_for(void* target) {
@@ -311,6 +315,15 @@ struct UnifiedStageRenderer::Impl {
         if (request.config && request.draw_song_title) {
             OptionalTiming timing(request.diagnostics
                 ? &request.diagnostics->title_render_qpc : nullptr);
+            if (!title_cache_generation_valid
+                    || title_cache_generation != request.timing.generation) {
+                // A block bitmap includes its design-space destination. Never
+                // let repeated singer/credit text reuse the previous song's
+                // placement. This runs once per song generation, not per frame.
+                renderers->title.invalidate_block_cache();
+                title_cache_generation = request.timing.generation;
+                title_cache_generation_valid = true;
+            }
             if (!renderers->title.render(request.config->song_title,
                         request.project_time,
                         request.config->engine.fade_duration)) {

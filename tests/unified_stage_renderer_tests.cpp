@@ -109,6 +109,29 @@ bool is_blue(const std::uint8_t* pixel) {
     return pixel[0] > 250 && pixel[1] < 4 && pixel[2] < 4 && pixel[3] > 250;
 }
 
+struct VerticalBounds {
+    bool valid{};
+    std::uint32_t top{};
+    std::uint32_t bottom{};
+};
+
+VerticalBounds visible_vertical_bounds(const std::vector<std::uint8_t>& pixels,
+        std::uint32_t width, std::uint32_t height) {
+    VerticalBounds result;
+    result.top = height;
+    for (std::uint32_t y = 0; y < height; ++y) {
+        for (std::uint32_t x = 0; x < width; ++x) {
+            const auto* pixel = pixels.data()
+                + (static_cast<std::size_t>(y) * width + x) * 4U;
+            if (is_black(pixel)) continue;
+            result.valid = true;
+            result.top = std::min(result.top, y);
+            result.bottom = std::max(result.bottom, y);
+        }
+    }
+    return result;
+}
+
 std::uint64_t sparse_hash(const std::vector<std::uint8_t>& pixels) {
     std::uint64_t hash = 1469598103934665603ULL;
     const auto stride = std::max<std::size_t>(4, pixels.size() / 8192U);
@@ -344,6 +367,54 @@ void validate_video_base_cache() {
         "idle frame does not leak cached video base");
 }
 
+void validate_title_cache_generation() {
+    constexpr std::uint32_t width = 1280;
+    constexpr std::uint32_t height = 720;
+    UnifiedStageRenderer renderer;
+    expect(renderer.configure(StageOutputProfile{
+        StageOutputRole::physical_display,
+        width,
+        height,
+        60,
+        1,
+        StagePixelFormat::bgra8,
+    }), "configure title-cache Stage");
+    auto mailbox = renderer.subscribe();
+    auto config = test_config();
+    config.song_title.blocks.front().lines = {"SAME CREDIT"};
+    config.song_title.blocks.front().style.y = 80.0F;
+
+    UnifiedStageRenderRequest request{
+        .timing = StageFrameTiming{100, 0, 10'000'000, 166'667},
+        .project_time = 1.0,
+        .config = &config,
+        .draw_lyrics = false,
+    };
+    expect(renderer.render(request) == UnifiedStageRenderResult::published,
+        "publish first song title placement");
+    auto frame = mailbox.take_latest();
+    expect(static_cast<bool>(frame), "receive first song title frame");
+    const auto first_bounds = visible_vertical_bounds(
+        read_bgra(frame->native_resource, width, height), width, height);
+    expect(first_bounds.valid, "first song title has visible pixels");
+    frame = {};
+
+    // The next song deliberately repeats the same credit text and font while
+    // moving only Y. Its generation boundary must discard the old block
+    // bitmap placement without flushing title caches on every frame.
+    config.song_title.blocks.front().style.y = 360.0F;
+    request.timing = StageFrameTiming{101, 0, 10'000'000, 166'667};
+    expect(renderer.render(request) == UnifiedStageRenderResult::published,
+        "publish repeated title text in next song generation");
+    frame = mailbox.take_latest();
+    expect(static_cast<bool>(frame), "receive next song title frame");
+    const auto next_bounds = visible_vertical_bounds(
+        read_bgra(frame->native_resource, width, height), width, height);
+    expect(next_bounds.valid, "next song title has visible pixels");
+    expect(next_bounds.top > first_bounds.top + 200U,
+        "next song title uses its current Y instead of cached placement");
+}
+
 void validate_real_media(const std::wstring& first_video,
         const std::filesystem::path& first_krl,
         const std::wstring& second_video) {
@@ -575,6 +646,7 @@ int wmain(int argc, wchar_t** argv) {
         "COM initialization");
     expect(SUCCEEDED(MFStartup(MF_VERSION)), "Media Foundation startup");
     validate_video_base_cache();
+    validate_title_cache_generation();
     validate_profile(1920, 1080);
     validate_profile(2560, 1440);
     validate_profile(3840, 2160);
