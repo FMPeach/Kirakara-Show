@@ -1522,7 +1522,9 @@ void render_cast_frame(CastSession& cast) {
             source, video_revision, video_sample_time);
         if (decoded && !hold_video_tail_for_audio
                 && !video_frame_matches_program_time(
-                decoded->timestamp_seconds(), stage_time)) {
+                decoded->timestamp_seconds(),
+                decoded->duration_seconds(),
+                stage_time)) {
             decoded.reset();
         }
     }

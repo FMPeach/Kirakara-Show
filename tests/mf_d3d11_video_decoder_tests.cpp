@@ -56,7 +56,9 @@ std::shared_ptr<const DecodedD3D11VideoFrame> wait_for_matching_texture(
             source, revision, position, MfD3D11PlaybackState::playing);
         auto texture = decoder.texture_for(source, revision, position);
         if (texture && video_frame_matches_program_time(
-                texture->timestamp_seconds(), position)) {
+                texture->timestamp_seconds(),
+                texture->duration_seconds(),
+                position)) {
             return texture;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -160,10 +162,16 @@ int wmain(int argc, wchar_t** argv) {
         "previous-song Cast readiness must not release the new timeline");
     expect(!cast_program_ready_for_timeline(false, 8, 8),
         "an unpublished Cast timeline must remain gated");
-    expect(video_frame_matches_program_time(1.000, 1.050),
+    expect(video_frame_matches_program_time(1.000, 0.0, 1.050),
         "50 ms video delta should be accepted");
-    expect(!video_frame_matches_program_time(1.000, 1.051),
+    expect(!video_frame_matches_program_time(1.000, 0.0, 1.051),
         "video delta above 50 ms should gate program audio");
+    expect(video_frame_matches_program_time(
+            1.000, 1.0 / 12.0, 1.075),
+        "a 12 fps video sample should cover its declared duration");
+    expect(!video_frame_matches_program_time(
+            1.000, 1.0 / 12.0, 1.084),
+        "a low-frame-rate sample must expire after its declared duration");
     expect(std::abs(cast_audio_chunk_start_time(10.0, 2, 60, 1)
             - (10.0 - 2.0 / 60.0)) < 1e-9,
         "skipped video slots should preserve continuous audio time");
@@ -352,7 +360,9 @@ int wmain(int argc, wchar_t** argv) {
         const auto immediate = decoder.texture_for(
             source, revision, resume_position);
         expect(!immediate || video_frame_matches_program_time(
-                immediate->timestamp_seconds(), resume_position),
+                immediate->timestamp_seconds(),
+                immediate->duration_seconds(),
+                resume_position),
             "same-revision resume exposed a stale decoder texture");
         frame = wait_for_matching_texture(
             decoder, source, revision, resume_position);

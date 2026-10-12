@@ -15,15 +15,25 @@ constexpr double kCastAudioRealignSeconds = 0.025;
         && ready_timeline_revision == current_timeline_revision;
 }
 
-// Shared by both outputs: the native Stage picks a decoded frame for the
-// program time and Cast does the same for its compositor, so the name must not
-// imply the Cast path owns it.
+// Shared by both outputs: a decoded sample remains the correct picture for its
+// declared duration.  Keep the historical 50 ms tolerance as the minimum for
+// ordinary 30/60 fps sources and short decoder jitter, but do not reject a
+// legitimate low-frame-rate/VFR sample before its own presentation interval
+// ends.
 [[nodiscard]] inline bool video_frame_matches_program_time(
-        double frame_time_seconds, double program_time_seconds) noexcept {
-    return std::isfinite(frame_time_seconds)
-        && std::isfinite(program_time_seconds)
-        && std::abs(frame_time_seconds - program_time_seconds)
-            <= kCastMaxAvDeltaSeconds + 1e-9;
+        double frame_time_seconds,
+        double frame_duration_seconds,
+        double program_time_seconds) noexcept {
+    if (!std::isfinite(frame_time_seconds)
+            || !std::isfinite(program_time_seconds)) {
+        return false;
+    }
+    const auto valid_duration = std::isfinite(frame_duration_seconds)
+            && frame_duration_seconds > 0.0
+        ? frame_duration_seconds : 0.0;
+    const auto delta = program_time_seconds - frame_time_seconds;
+    return delta >= -kCastMaxAvDeltaSeconds - 1e-9
+        && delta <= std::max(kCastMaxAvDeltaSeconds, valid_duration) + 1e-9;
 }
 
 [[nodiscard]] inline double cast_audio_chunk_start_time(

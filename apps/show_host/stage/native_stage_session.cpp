@@ -709,7 +709,7 @@ void service_native_stage_standby_video(ShowHost& host) {
         0.0);
     const bool ready = frame
         && video_frame_matches_program_time(
-            frame->timestamp_seconds(), 0.0);
+            frame->timestamp_seconds(), frame->duration_seconds(), 0.0);
     if (!ready) return;
     host.native_stage.standby_video_ready = true;
     host.native_stage.pipeline_diagnostics.increment(
@@ -989,7 +989,9 @@ void render_unified_native_stage(ShowHost& host) {
                 host.playback.current_media.video, generation, stage_time);
         }
         if (decoded && !video_frame_matches_program_time(
-                decoded->timestamp_seconds(), stage_time)) {
+                decoded->timestamp_seconds(),
+                decoded->duration_seconds(),
+                stage_time)) {
             decoded.reset();
         }
         if (decoded) {
