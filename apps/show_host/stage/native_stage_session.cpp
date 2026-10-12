@@ -604,9 +604,9 @@ bool prime_native_stage_video(ShowHost& host, double position) {
     // handle_play skip the gate, play the clock immediately, and later
     // handle_video_can_play seek audio/video to the drifted clock position
     // (~0.3s in) — the mid-song start observed on external links.  The Stage
-    // decoder retries open/seek until the source is usable, and
-    // kNativeVideoStartTimeout still releases the gate as a fallback, so a
-    // broken source cannot hold playback forever.
+    // decoder retries open/seek until the source is usable. The five-second
+    // threshold is diagnostic only: releasing the clock before a frame exists
+    // turns ordinary progressive startup into audible playback over black.
     host.native_stage.stage_video_decoder.synchronize(
         host.playback.current_media.video,
         host.playback.video_timeline_revision.load(std::memory_order_relaxed),
@@ -804,6 +804,7 @@ void release_native_video_start_gate(ShowHost& host) {
         return;
     }
 
+    host.playback.video_buffering.store(false);
     seek_video_outputs(host, start_position);
     if (host.playback.audio->is_open()) {
         static_cast<void>(host.playback.audio->seek(start_position));
@@ -1139,10 +1140,10 @@ void render_unified_native_stage(ShowHost& host) {
                 record_native_first_frame_if_pending(host);
                 host.native_stage.stage_video_frame_available = true;
                 mark_current_native_video_program_ready(host, generation);
+                release_native_video_start_gate(host);
                 static_cast<void>(refresh_stage_program_ready(host));
                 host.output_transition.native_transition_holding = false;
                 host.output_transition.transition_hold_started = {};
-                release_native_video_start_gate(host);
             }
         };
         const auto present_frame = [&host]() {
@@ -1200,10 +1201,10 @@ void render_unified_native_stage(ShowHost& host) {
         record_native_first_frame_if_pending(host);
         host.native_stage.stage_video_frame_available = true;
         mark_current_native_video_program_ready(host, generation);
+        release_native_video_start_gate(host);
         static_cast<void>(refresh_stage_program_ready(host));
         host.output_transition.native_transition_holding = false;
         host.output_transition.transition_hold_started = {};
-        release_native_video_start_gate(host);
     }
 }
 

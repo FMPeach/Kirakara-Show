@@ -113,26 +113,17 @@ void expire_stalled_program_transition(ShowHost& host) {
         - host.output_transition.transition_hold_started;
     // Normal takeover window: keep the previous frame visible.
     if (elapsed < kSeamlessTransitionHold) return;
-    // Past the seamless window: warn once per hold cycle and keep holding.
-    // Normal decoder cold starts (external HTTP sources) exceed 750 ms and
-    // must not turn into black. Only a much longer stall (aligned with the
-    // first-frame gate) falls back to black so a broken source cannot freeze
-    // forever. The warning is deliberately one-shot: log_line() flushes to
-    // disk synchronously, so logging every frame would stall the render loop.
-    if (elapsed < kNativeVideoStartTimeout) {
-        if (!host.output_transition.native_transition_warned) {
-            host.output_transition.native_transition_warned = true;
-            log_line("native transition exceeded takeover window; holding last frame");
-        }
-        return;
+    // Past the seamless window, retain the last complete program until the
+    // replacement has actually reached a sink. Progressive sources can need
+    // more than five seconds before their first decodable frame is available;
+    // replacing a valid old frame with black at an arbitrary deadline only
+    // makes that normal buffering interval visible. Decoder/download failure
+    // handling owns aborting the program transition. This warning is
+    // deliberately one-shot because log_line() flushes synchronously.
+    if (!host.output_transition.native_transition_warned) {
+        host.output_transition.native_transition_warned = true;
+        log_line("native transition exceeded takeover window; holding last frame");
     }
-    host.output_transition.native_transition_holding = false;
-    host.native_stage.native_presentation_holds_frame = false;
-    ensure_stage_surface_visible(host);
-    if (!host.cast.lifecycle.snapshot().holding_previous_output) {
-        host.output_transition.transition_hold_started = {};
-    }
-    log_line("native seamless transition missed takeover window; showing black");
 }
 
 void apply_audio_processing(ShowHost& host) {
@@ -432,6 +423,14 @@ void handle_play(ShowHost& host) {
         wait_for_native_video
             && host.native_stage.pipeline_diagnostics.enabled()
         ? NativeStagePipelineDiagnostics::qpc_now() : 0;
+    if (wait_for_native_video) {
+        // The public buffering state must describe the program clock as well
+        // as MediaEngine. Until a complete Stage frame reaches its sink, the
+        // clock is intentionally frozen even for audio-master programs.
+        host.playback.video_buffering.store(true);
+        host.playback.video_buffering_position.store(
+            start_position, std::memory_order_relaxed);
+    }
     host.cast.lifecycle.request_play(
         wait_for_cast_video,
         start_position,
@@ -458,7 +457,6 @@ void handle_play(ShowHost& host) {
         if (wait_for_native_video || wait_for_cast_video) {
             static_cast<void>(host.playback.audio->pause());
             pause_video_outputs(host);
-            host.playback.video_buffering.store(false);
         } else if (!host.playback.video_master_clock || host.playback.player.has_future_data()) {
             static_cast<void>(host.playback.audio->play());
             host.playback.video_buffering.store(false);

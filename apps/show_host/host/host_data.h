@@ -163,8 +163,8 @@ struct OutputTransitionRuntime {
     // the replacement is ready. Native and Cast outputs take over separately.
     bool native_transition_holding{};
     std::chrono::steady_clock::time_point transition_hold_started{};
-    // One-shot guard so expire_stalled_program_transition logs its
-    // "past takeover window" warning only once per transition hold cycle.
+    // One-shot guard so a slow replacement logs its "past takeover window"
+    // warning only once while the last complete frame remains visible.
     bool native_transition_warned{};
 };
 
