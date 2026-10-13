@@ -133,7 +133,10 @@ private:
     MfD3D11VideoFormat format_;
 };
 
-// Media Foundation decode endpoint for the Cast renderer. PlaybackSession
+// Media decode endpoint for Stage/Cast. All formats use FFmpeg, preferring
+// D3D11VA hardware decoding with software fallback. The historical type name
+// is retained to keep internal callers and frame metadata compatible.
+// PlaybackSession
 // synchronizes source/timeline state, then the worker decodes sequentially
 // into a small queue of decoder-output D3D11 textures. The renderer consumes
 // that queue; it never asks Media Foundation to capture or extract a rendered

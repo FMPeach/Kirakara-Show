@@ -23,6 +23,9 @@
 .PARAMETER Objdump
     objdump executable to use. Defaults to objdump from PATH.
 
+.PARAMETER Dumpbin
+    MSVC dumpbin executable. When specified, use it instead of objdump.
+
 .PARAMETER Update
     Rewrite the baseline from the current DLL. Only use together with an
     intentional ABI change.
@@ -32,6 +35,7 @@ param(
     [Parameter(Mandatory = $true)][string]$Dll,
     [Parameter(Mandatory = $true)][string]$Baseline,
     [string]$Objdump = 'objdump',
+    [string]$Dumpbin,
     [switch]$Update
 )
 
@@ -47,14 +51,18 @@ $stage = Join-Path ([System.IO.Path]::GetTempPath()) `
 Copy-Item -LiteralPath $Dll -Destination $stage -Force
 
 try {
-    $raw = & $Objdump -p $stage 2>&1
+    if ($Dumpbin) {
+        $raw = & $Dumpbin /exports $stage 2>&1
+    } else {
+        $raw = & $Objdump -p $stage 2>&1
+    }
     $dumpExit = $LASTEXITCODE
 } finally {
     Remove-Item -LiteralPath $stage -Force -ErrorAction SilentlyContinue
 }
 
 if ($dumpExit -ne 0) {
-    Write-Error "show_host ABI: objdump failed ($dumpExit): $raw"
+    Write-Error "show_host ABI: export inspection failed ($dumpExit): $raw"
     exit 2
 }
 

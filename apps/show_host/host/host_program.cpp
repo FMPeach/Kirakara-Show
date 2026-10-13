@@ -2,6 +2,7 @@
 // Definitions were mechanically moved from host_commands.cpp.
 
 #include "host_program.h"
+#include "../media/ffmpeg_decode.h"
 
 #include "host_commands.h"
 
@@ -155,19 +156,14 @@ bool open_media_engine_video(
         ShowHost& host, const std::wstring& source) {
     const auto video_output_window = host.media_clock_window
         ? host.media_clock_window : host.window;
-    if (!host.playback.player.open(host.window, video_output_window, source)) {
-        host.output_transition.media_engine_video_source_active.store(
-            false, std::memory_order_release);
-        return false;
-    }
-    RECT rect{};
-    GetClientRect(host.playback.player.playback_window, &rect);
-    host.playback.player.resize(rect);
+    FfmpegMediaInfo info;
+    const auto ready = ffmpeg_probe_video(source, info)
+        && host.playback.player.open_ffmpeg_clock(host.window,
+            video_output_window, source, info.duration_seconds);
     host.output_transition.media_engine_video_source_active.store(
-        !source.empty(), std::memory_order_release);
-    return true;
+        ready && !source.empty(), std::memory_order_release);
+    return ready;
 }
-
 bool same_load_request(
         const LoadRequest& left, const LoadRequest& right) {
     return left.video == right.video
@@ -320,6 +316,10 @@ bool handle_load(ShowHost& host, const LoadRequest& request) {
         host.playback.audio_track = SHOW_AUDIO_TRACK_ACCOMPANIMENT;
         static_cast<void>(
             host.playback.audio->open(host.playback.accompaniment_path));
+    } else {
+        FfmpegMediaInfo info;
+        if (ffmpeg_probe_video(request.video, info) && info.has_audio)
+            static_cast<void>(host.playback.audio->open(request.video));
     }
 
     apply_audio_processing(host);

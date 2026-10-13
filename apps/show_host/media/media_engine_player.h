@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../host/host_utils.h"
+#include "ffmpeg_decode.h"
 
 #include <windows.h>
 #include <mfapi.h>
@@ -11,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <chrono>
 #include <string>
 
 #pragma comment(lib, "mf")
@@ -70,6 +72,11 @@ struct MediaEnginePlayer {
     std::uint64_t generation{};
     HWND playback_window{};
     std::wstring source_path;
+    bool ffmpeg_clock{};
+    double ffmpeg_clock_duration{};
+    double ffmpeg_clock_position{};
+    std::chrono::steady_clock::time_point ffmpeg_clock_started;
+    mutable bool ffmpeg_clock_ended_posted{};
 
     ~MediaEnginePlayer() { close(); }
 
@@ -101,89 +108,43 @@ struct MediaEnginePlayer {
         pending_seek = 0.0;
         playback_window = nullptr;
         source_path.clear();
+        ffmpeg_clock = false;
+        ffmpeg_clock_duration = 0.0;
+        ffmpeg_clock_position = 0.0;
+        ffmpeg_clock_ended_posted = false;
         discard_pending_events(event_window);
     }
 
-    bool open(HWND event_window, HWND video_window,
-            const std::wstring& path) {
-        close();
-
-        if (!event_window || !video_window) return false;
-
-        for (int attempt = 0; attempt < 3; ++attempt) {
-            ++generation;
-            HRESULT result = S_OK;
-            IMFAttributes* attributes{};
-            if (SUCCEEDED(result)) result = MFCreateAttributes(&attributes, 8);
-            notify = new Notify(event_window, generation);
-            if (SUCCEEDED(result)) {
-                result = attributes->SetUnknown(MF_MEDIA_ENGINE_CALLBACK, notify);
-            }
-            if (SUCCEEDED(result)) {
-                result = attributes->SetUINT64(MF_MEDIA_ENGINE_PLAYBACK_HWND,
-                    reinterpret_cast<UINT64>(video_window));
-            }
-
-            IMFMediaEngineClassFactory* factory{};
-            if (SUCCEEDED(result)) {
-                result = CoCreateInstance(CLSID_MFMediaEngineClassFactory, nullptr,
-                    CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
-            }
-            if (SUCCEEDED(result)) {
-                result = factory->CreateInstance(
-                    MF_MEDIA_ENGINE_REAL_TIME_MODE, attributes, &engine);
-            }
-            release_com(factory);
-            release_com(attributes);
-
-            if (SUCCEEDED(result)) {
-                set_volume(0, false);
-                engine->SetPreload(MF_MEDIA_ENGINE_PRELOAD_AUTOMATIC);
-                const auto url = path.starts_with(L"http://")
-                    || path.starts_with(L"https://")
-                    ? path : file_url_from_path(path);
-                BSTR source = SysAllocString(url.c_str());
-                result = source
-                    ? engine->SetSource(source) : E_OUTOFMEMORY;
-                SysFreeString(source);
-                if (FAILED(result)) {
-                    log_hresult("MediaEnginePlayer::open: SetSource failed",
-                        result);
-                }
-            }
-
-            if (SUCCEEDED(result)) {
-                loaded = true;
-                playback_window = video_window;
-                source_path = path;
-                return true;
-            }
-
-            if (notify) { notify->window = nullptr; }
-            if (engine) {
-                engine->Pause();
-                engine->Shutdown();
-            }
-            release_com(notify);
-            release_com(engine);
-            loaded = false;
-            playing = false;
-            discard_pending_events(event_window);
-            Sleep(16 * (attempt + 1));
-        }
-        log_line("MediaEnginePlayer::open: failed after retries");
-        return false;
+    bool open(HWND event_window, HWND video_window, const std::wstring& path) {
+        FfmpegMediaInfo info;
+        return ffmpeg_probe_video(path, info)
+            && open_ffmpeg_clock(event_window, video_window, path, info.duration_seconds);
     }
-
     bool open(HWND window, const std::wstring& path) {
         return open(window, window, path);
+    }
+
+    bool open_ffmpeg_clock(HWND event_window, HWND video_window,
+            const std::wstring& path, double duration_seconds) {
+        close();
+        if (!event_window || !video_window) return false;
+        notify = new Notify(event_window, generation);
+        ffmpeg_clock = true;
+        ffmpeg_clock_duration = std::max(0.0, duration_seconds);
+        loaded = true;
+        playback_window = video_window;
+        source_path = path;
+        return true;
     }
 
     bool reopen_current(HWND event_window, HWND video_window,
             double seconds, bool should_play) {
         if (source_path.empty()) return false;
         const auto path = source_path;
-        const auto opened = open(event_window, video_window, path);
+        const auto clock_duration = ffmpeg_clock_duration;
+        const auto opened = ffmpeg_clock
+            ? open_ffmpeg_clock(event_window, video_window, path, clock_duration)
+            : open(event_window, video_window, path);
         if (!opened) return false;
         if (std::isfinite(seconds) && seconds > 0.0) seek(seconds);
         if (should_play) play();
@@ -195,17 +156,20 @@ struct MediaEnginePlayer {
     }
 
     bool can_seek() const {
+        if (ffmpeg_clock) return loaded;
         return engine
             && engine->GetReadyState() >= MF_MEDIA_ENGINE_READY_HAVE_METADATA;
     }
 
     bool has_future_data() const {
+        if (ffmpeg_clock) return loaded;
         return engine
             && engine->GetReadyState()
                 >= MF_MEDIA_ENGINE_READY_HAVE_FUTURE_DATA;
     }
 
     void apply_pending_seek() {
+        if (ffmpeg_clock) return;
         if (!has_pending_seek || !can_seek()) return;
         if (SUCCEEDED(engine->SetCurrentTime(pending_seek))) {
             has_pending_seek = false;
@@ -213,6 +177,13 @@ struct MediaEnginePlayer {
     }
 
     void try_play_if_requested() {
+        if (ffmpeg_clock) {
+            if (wants_playing && !playing) {
+                ffmpeg_clock_started = std::chrono::steady_clock::now();
+                playing = true;
+            }
+            return;
+        }
         if (!wants_playing || playing || !engine) return;
         apply_pending_seek();
         if (SUCCEEDED(engine->Play())) {
@@ -226,12 +197,15 @@ struct MediaEnginePlayer {
     }
 
     void pause() {
+        if (ffmpeg_clock) ffmpeg_clock_position = current_time();
         wants_playing = false;
         if (engine) engine->Pause();
         playing = false;
     }
 
     void mark_ended() {
+        if (ffmpeg_clock && ffmpeg_clock_duration > 0.0)
+            ffmpeg_clock_position = ffmpeg_clock_duration;
         playing = false;
         wants_playing = false;
     }
@@ -249,8 +223,15 @@ struct MediaEnginePlayer {
     }
 
     void seek(double seconds) {
-        if (!engine) return;
         if (!std::isfinite(seconds) || seconds < 0.0) seconds = 0.0;
+        if (ffmpeg_clock) {
+            ffmpeg_clock_position = ffmpeg_clock_duration > 0.0
+                ? std::min(seconds, ffmpeg_clock_duration) : seconds;
+            ffmpeg_clock_started = std::chrono::steady_clock::now();
+            ffmpeg_clock_ended_posted = false;
+            return;
+        }
+        if (!engine) return;
         if (can_seek() && SUCCEEDED(engine->SetCurrentTime(seconds))) {
             has_pending_seek = false;
             pending_seek = seconds;
@@ -261,7 +242,7 @@ struct MediaEnginePlayer {
     }
 
     void sync_to(double seconds) {
-        if (!engine || !std::isfinite(seconds)) return;
+        if ((!engine && !ffmpeg_clock) || !std::isfinite(seconds)) return;
         const auto current = current_time();
         if (!std::isfinite(current) || std::abs(current - seconds) > 0.18) {
             seek(seconds);
@@ -269,6 +250,19 @@ struct MediaEnginePlayer {
     }
 
     double current_time() const {
+        if (ffmpeg_clock) {
+            const auto position = ffmpeg_clock_position + (playing
+                ? std::chrono::duration<double>(std::chrono::steady_clock::now()
+                    - ffmpeg_clock_started).count() : 0.0);
+            if (ffmpeg_clock_duration > 0.0 && position >= ffmpeg_clock_duration) {
+                if (playing && !ffmpeg_clock_ended_posted && notify) {
+                    ffmpeg_clock_ended_posted = true;
+                    notify->EventNotify(MF_MEDIA_ENGINE_EVENT_ENDED, 0, 0);
+                }
+                return ffmpeg_clock_duration;
+            }
+            return position;
+        }
         if (!engine) return 0.0;
         if (has_pending_seek) return pending_seek;
         const auto value = engine->GetCurrentTime();
@@ -276,6 +270,7 @@ struct MediaEnginePlayer {
     }
 
     double duration() const {
+        if (ffmpeg_clock) return ffmpeg_clock_duration;
         if (!engine) return 0.0;
         const auto value = engine->GetDuration();
         return std::isfinite(value) && value > 0.0 ? value : 0.0;

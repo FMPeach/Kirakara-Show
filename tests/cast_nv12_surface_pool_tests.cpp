@@ -6,7 +6,7 @@
 #include <iostream>
 #include <string_view>
 
-#include <d3d10.h>
+#include <d3d10_1.h>
 #include <d3d11.h>
 
 namespace {

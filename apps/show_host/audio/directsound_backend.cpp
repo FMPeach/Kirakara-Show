@@ -421,7 +421,7 @@ void DirectSoundPcmAudioBackend::render_loop()
         while (true) {
             {
                 std::unique_lock lock(mutex_);
-                cv_.wait_for(lock, std::chrono::milliseconds(8), [this] {
+                cv_.wait(lock, [this] {
                     return stop_thread_ || playing_;
                 });
                 if (stop_thread_) return;
@@ -457,6 +457,14 @@ void DirectSoundPcmAudioBackend::render_loop()
                     ended_.store(true, std::memory_order_relaxed);
                 }
             }
+            // While playing, the entry predicate is already true. Waiting
+            // there used to return immediately and poll the cursor at full
+            // CPU speed even when the audio ring was full. Pace refills here;
+            // close/pause still interrupt the wait and buffer priming is instant.
+            std::unique_lock lock(mutex_);
+            cv_.wait_for(lock, std::chrono::milliseconds(8), [this] {
+                return stop_thread_ || !playing_;
+            });
         }
     }
 

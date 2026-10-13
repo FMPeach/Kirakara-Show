@@ -1,3 +1,4 @@
+#include "../media/ffmpeg_decode.h"
 #include "d3d11_cast_capabilities.h"
 
 #include <algorithm>
@@ -348,137 +349,27 @@ HRESULT same_adapter(ID3D11Device* left, ID3D11Device* right) {
     return hr;
 }
 
-HRESULT probe_native_nv12_source(
-        ID3D11Device* device,
-        const wchar_t* source) {
-    if (!source || !*source) return E_INVALIDARG;
-    IMFDXGIDeviceManager* manager{};
-    UINT reset_token{};
-    auto hr = MFCreateDXGIDeviceManager(&reset_token, &manager);
-    if (SUCCEEDED(hr)) hr = manager->ResetDevice(device, reset_token);
-    IMFAttributes* attributes{};
-    if (SUCCEEDED(hr)) hr = MFCreateAttributes(&attributes, 4);
-    if (SUCCEEDED(hr)) {
-        hr = attributes->SetUnknown(MF_SOURCE_READER_D3D_MANAGER, manager);
+HRESULT probe_native_nv12_source(ID3D11Device* device, const wchar_t* source) {
+    if (!device || !source || !*source) return E_INVALIDARG;
+    FfmpegVideoDecoder decoder;
+    if (!decoder.open(source, MfD3D11VideoPixelFormat::nv12, false, device)) return E_FAIL;
+    FfmpegVideoFrame frame;
+    if (decoder.read(frame) != FfmpegReadStatus::frame) return E_FAIL;
+    if (!frame.hardware_texture) {
+        // Software fallback will upload the converted NV12 pixels into the
+        // same device; the report describes the usable source output.
+        return frame.pixels.empty() ? E_FAIL : S_OK;
     }
-    if (SUCCEEDED(hr)) {
-        hr = attributes->SetUINT32(
-            kReadwriteEnableHardwareTransforms, TRUE);
-    }
-    IMFSourceReader* reader{};
-    const auto url = source_url(source);
-    if (SUCCEEDED(hr)) {
-        hr = MFCreateSourceReaderFromURL(url.c_str(), attributes, &reader);
-    }
-    if (SUCCEEDED(hr)) {
-        static_cast<void>(reader->SetStreamSelection(
-            MF_SOURCE_READER_ALL_STREAMS, FALSE));
-        hr = reader->SetStreamSelection(
-            MF_SOURCE_READER_FIRST_VIDEO_STREAM, TRUE);
-    }
-    IMFMediaType* native{};
-    if (SUCCEEDED(hr)) {
-        static_cast<void>(reader->GetNativeMediaType(
-            MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, &native));
-        HRESULT media_type_result = E_FAIL;
-        for (const bool pin_source_geometry : {true, false}) {
-            IMFMediaType* type{};
-            auto type_result = MFCreateMediaType(&type);
-            if (SUCCEEDED(type_result)) {
-                type_result = type->SetGUID(
-                    MF_MT_MAJOR_TYPE, MFMediaType_Video);
-            }
-            if (SUCCEEDED(type_result)) {
-                type_result = type->SetGUID(
-                    MF_MT_SUBTYPE, MFVideoFormat_NV12);
-            }
-            if (SUCCEEDED(type_result)) {
-                static_cast<void>(type->SetUINT32(
-                    MF_SA_D3D11_BINDFLAGS,
-                    D3D11_BIND_SHADER_RESOURCE));
-            }
-            if (SUCCEEDED(type_result) && pin_source_geometry && native) {
-                UINT32 width{}, height{};
-                if (SUCCEEDED(MFGetAttributeSize(
-                            native, MF_MT_FRAME_SIZE, &width, &height))
-                        && width != 0 && height != 0) {
-                    static_cast<void>(MFSetAttributeSize(
-                        type, MF_MT_FRAME_SIZE, width, height));
-                }
-                UINT32 numerator{}, denominator{};
-                if (SUCCEEDED(MFGetAttributeRatio(native,
-                            MF_MT_PIXEL_ASPECT_RATIO,
-                            &numerator, &denominator))
-                        && numerator != 0 && denominator != 0) {
-                    static_cast<void>(MFSetAttributeRatio(type,
-                        MF_MT_PIXEL_ASPECT_RATIO, numerator, denominator));
-                }
-                if (SUCCEEDED(MFGetAttributeRatio(native,
-                            MF_MT_FRAME_RATE,
-                            &numerator, &denominator))
-                        && numerator != 0 && denominator != 0) {
-                    static_cast<void>(MFSetAttributeRatio(type,
-                        MF_MT_FRAME_RATE, numerator, denominator));
-                }
-                UINT32 interlace{};
-                if (SUCCEEDED(native->GetUINT32(
-                            MF_MT_INTERLACE_MODE, &interlace))) {
-                    static_cast<void>(type->SetUINT32(
-                        MF_MT_INTERLACE_MODE, interlace));
-                }
-            }
-            if (SUCCEEDED(type_result)) {
-                media_type_result = reader->SetCurrentMediaType(
-                    MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, type);
-            } else {
-                media_type_result = type_result;
-            }
-            release(type);
-            if (SUCCEEDED(media_type_result)) break;
-        }
-        hr = media_type_result;
-    }
-
-    IMFSample* sample{};
-    for (unsigned attempt = 0; SUCCEEDED(hr) && !sample && attempt < 128;
-            ++attempt) {
-        DWORD actual_stream{};
-        DWORD flags{};
-        LONGLONG timestamp{};
-        hr = reader->ReadSample(
-            MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0,
-            &actual_stream, &flags, &timestamp, &sample);
-        static_cast<void>(actual_stream);
-        static_cast<void>(timestamp);
-        if (SUCCEEDED(hr) && (flags & MF_SOURCE_READERF_ENDOFSTREAM)) {
-            hr = kMfEndOfStream;
-        }
-    }
-    IMFMediaBuffer* buffer{};
-    IMFDXGIBuffer* dxgi_buffer{};
-    ID3D11Texture2D* texture{};
-    if (SUCCEEDED(hr) && sample) hr = sample->GetBufferByIndex(0, &buffer);
-    if (SUCCEEDED(hr)) hr = buffer->QueryInterface(IID_PPV_ARGS(&dxgi_buffer));
-    if (SUCCEEDED(hr)) hr = dxgi_buffer->GetResource(IID_PPV_ARGS(&texture));
-    D3D11_TEXTURE2D_DESC description{};
-    if (SUCCEEDED(hr)) texture->GetDesc(&description);
-    if (SUCCEEDED(hr) && description.Format != DXGI_FORMAT_NV12) hr = E_FAIL;
-    ID3D11Device* texture_device{};
-    if (SUCCEEDED(hr)) texture->GetDevice(&texture_device);
-    if (SUCCEEDED(hr)) hr = same_adapter(device, texture_device);
-
-    release(texture_device);
-    release(texture);
-    release(dxgi_buffer);
-    release(buffer);
-    release(sample);
-    release(native);
-    release(reader);
-    release(attributes);
-    release(manager);
-    return hr;
+    auto* texture = static_cast<ID3D11Texture2D*>(frame.hardware_texture);
+    D3D11_TEXTURE2D_DESC desc{};
+    texture->GetDesc(&desc);
+    if (desc.Format != DXGI_FORMAT_NV12 && desc.Format != DXGI_FORMAT_P010) return E_FAIL;
+    ID3D11Device* owner{};
+    texture->GetDevice(&owner);
+    const auto result = same_adapter(device, owner);
+    release(owner);
+    return result;
 }
-
 IMFMediaType* video_type(
         REFGUID subtype,
         const D3D11CastCapabilityProbeOptions& options,

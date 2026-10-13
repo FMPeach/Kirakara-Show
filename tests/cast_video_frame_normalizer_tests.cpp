@@ -7,7 +7,7 @@
 #include <string_view>
 #include <vector>
 
-#include <d3d10.h>
+#include <d3d10_1.h>
 #include <d3d11.h>
 #include <mfobjects.h>
 

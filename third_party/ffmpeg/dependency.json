@@ -1,0 +1,8 @@
+{
+  "version": "n8.1.3-18-g46d899d7a0-20261012",
+  "license": "LGPL-3.0-or-later",
+  "archiveUrl": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-12-13-12/ffmpeg-n8.1.3-18-g46d899d7a0-win64-lgpl-shared-8.1.zip",
+  "archiveSha256": "fa628b9de20254fe7c80605a4c6af54d0bffdda0807363ee7557131c2b78e051",
+  "ffmpegRevision": "46d899d7a02bc63237472cc4897258d5ddf274ac",
+  "buildScriptsRevision": "63ac3265b0789ea16c7b1f8351cd2ad195a28722"
+}

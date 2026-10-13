@@ -10,6 +10,17 @@ void render_idle_frame(ShowHost& host) {
     if (!has_ts_stage_output(host)) {
         host.playback.player.apply_pending_seek();
         host.playback.player.try_play_if_requested();
+        if (host.playback.player.ffmpeg_clock) {
+            // Poll even in audio-master mode, where media_time() otherwise
+            // reads only the audio backend and would never emit video EOF.
+            static_cast<void>(host.playback.player.current_time());
+            if (!host.playback.video_master_clock
+                    && host.playback.state.load() == SHOW_STATE_PLAYING
+                    && host.playback.audio->is_open()
+                    && host.playback.audio->has_ended()) {
+                handle_media_ended(host);
+            }
+        }
         maintain_video_master_sync(host);
     }
     static_cast<void>(refresh_stage_program_ready(host));

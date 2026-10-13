@@ -1,70 +1,15 @@
 #include "audio_decode.h"
 #include "decoded_buffer.h"
-
-#include "../host/host_utils.h"
+#include "../media/ffmpeg_decode.h"
 
 #include <cmath>
 #include <cstring>
 #include <vector>
 
-#include <mfapi.h>
-#include <mfidl.h>
-#include <mfreadwrite.h>
-
-#pragma comment(lib, "mfplat")
-#pragma comment(lib, "mfreadwrite")
-#pragma comment(lib, "mfuuid")
-
 std::size_t ring_distance_bytes(
         std::size_t from, std::size_t to, std::size_t ring_size) {
     return to >= from ? to - from : ring_size - from + to;
 }
-
-// ── Internal helpers ─────────────────────────────────────────────
-
-namespace {
-
-bool get_audio_type_details(IMFSourceReader* reader,
-                            DecodedAudioBuffer& buffer) {
-    IMFMediaType* current_type{};
-    if (FAILED(reader->GetCurrentMediaType(
-            MF_SOURCE_READER_FIRST_AUDIO_STREAM, &current_type))) {
-        return false;
-    }
-    UINT32 channels{};
-    UINT32 sample_rate{};
-    const auto channels_hr =
-        current_type->GetUINT32(MF_MT_AUDIO_NUM_CHANNELS, &channels);
-    const auto sample_rate_hr =
-        current_type->GetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, &sample_rate);
-    release_com(current_type);
-    if (FAILED(channels_hr) || FAILED(sample_rate_hr)
-            || channels == 0 || sample_rate == 0) {
-        return false;
-    }
-    buffer.channels = static_cast<int>(channels);
-    buffer.sample_rate = static_cast<int>(sample_rate);
-    return true;
-}
-
-bool set_float_audio_output_type(IMFSourceReader* reader) {
-    IMFMediaType* media_type{};
-    auto hr = MFCreateMediaType(&media_type);
-    if (SUCCEEDED(hr)) {
-        hr = media_type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
-    }
-    if (SUCCEEDED(hr)) {
-        hr = media_type->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_Float);
-    }
-    if (SUCCEEDED(hr)) {
-        hr = reader->SetCurrentMediaType(
-            MF_SOURCE_READER_FIRST_AUDIO_STREAM, nullptr, media_type);
-    }
-    release_com(media_type);
-    return SUCCEEDED(hr);
-}
-
-}  // namespace
 
 // ── Public API ───────────────────────────────────────────────────
 
@@ -138,77 +83,5 @@ void downmix_to_stereo(DecodedAudioBuffer& buffer) {
 
 bool decode_audio_to_float_pcm(const std::wstring& path,
                                DecodedAudioBuffer& buffer) {
-    buffer = {};
-    IMFSourceReader* reader{};
-    auto hr = MFCreateSourceReaderFromURL(path.c_str(), nullptr, &reader);
-    if (FAILED(hr) || !reader) {
-        log_hresult("MFCreateSourceReaderFromURL(audio) failed", hr);
-        release_com(reader);
-        return false;
-    }
-
-    static_cast<void>(
-        reader->SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS, FALSE));
-    static_cast<void>(reader->SetStreamSelection(
-        MF_SOURCE_READER_FIRST_AUDIO_STREAM, TRUE));
-    if (!set_float_audio_output_type(reader)
-            || !get_audio_type_details(reader, buffer)) {
-        release_com(reader);
-        return false;
-    }
-
-    while (true) {
-        DWORD stream_index{};
-        DWORD flags{};
-        LONGLONG timestamp{};
-        IMFSample* sample{};
-        hr = reader->ReadSample(MF_SOURCE_READER_FIRST_AUDIO_STREAM, 0,
-            &stream_index, &flags, &timestamp, &sample);
-        if (FAILED(hr)) {
-            log_hresult("ReadSample(audio) failed", hr);
-            release_com(sample);
-            release_com(reader);
-            return false;
-        }
-        if (flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) {
-            static_cast<void>(get_audio_type_details(reader, buffer));
-        }
-        if (flags & MF_SOURCE_READERF_ENDOFSTREAM) {
-            release_com(sample);
-            break;
-        }
-        if (!sample) continue;
-
-        IMFMediaBuffer* media_buffer{};
-        hr = sample->ConvertToContiguousBuffer(&media_buffer);
-        if (SUCCEEDED(hr) && media_buffer) {
-            BYTE* data{};
-            DWORD max_length{};
-            DWORD current_length{};
-            hr = media_buffer->Lock(&data, &max_length, &current_length);
-            if (SUCCEEDED(hr) && data && current_length > 0) {
-                static_cast<void>(max_length);
-                const auto sample_count =
-                    current_length / static_cast<DWORD>(sizeof(float));
-                const auto* float_data =
-                    reinterpret_cast<const float*>(data);
-                buffer.samples.insert(buffer.samples.end(),
-                    float_data, float_data + sample_count);
-            }
-            if (data) media_buffer->Unlock();
-        }
-        release_com(media_buffer);
-        release_com(sample);
-    }
-
-    release_com(reader);
-    if (buffer.sample_rate <= 0 || buffer.channels <= 0
-            || buffer.samples.empty()) {
-        return false;
-    }
-    downmix_to_stereo(buffer);
-    const auto whole_frames = buffer.frame_count();
-    buffer.samples.resize(
-        whole_frames * static_cast<std::size_t>(buffer.channels));
-    return whole_frames > 0;
+    return ffmpeg_decode_audio(path, buffer);
 }

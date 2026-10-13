@@ -29,6 +29,7 @@ Clone 本仓库后运行：
 
 ```powershell
 cd Kirakara-Show
+.\tools\prepare_ffmpeg.ps1
 .\build-release.bat
 ```
 
@@ -48,6 +49,11 @@ ctest --test-dir build --output-on-failure
 
 演示程序支持载入 `.lrc` / `.krl`、调整常用字幕参数和导出当前画面。视频、标题与字幕组合可
 通过 `kirakara_video_demo.exe` 验证。
+
+宿主的音视频解码统一使用 FFmpeg，支持 H.264 / AV1 / H.265 / Opus 等格式。
+视频默认优先 D3D11VA 硬解，设备不支持时回退软件；
+FFmpeg DLL 必须与 `show_host.dll` 一起部署，详见
+[FFmpeg 依赖说明](third_party/ffmpeg/README.md)。演示程序仍使用各自现有的媒体流程。
 
 ### 接入应用
 

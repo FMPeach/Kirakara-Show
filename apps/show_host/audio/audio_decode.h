@@ -1,8 +1,5 @@
 #pragma once
 
-#include <mfapi.h>
-#include <mfidl.h>
-#include <mfreadwrite.h>
 #include <string>
 #include <vector>
 

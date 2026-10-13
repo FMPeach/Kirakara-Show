@@ -11,6 +11,10 @@ Windows 开发需要：
 
 部分媒体 smoke 会调用 FFmpeg；只有运行这些测试时才需要把 `ffmpeg` 加入 `PATH`。
 
+Windows 宿主构建还需 FFmpeg LGPL 共享 SDK。首次构建运行
+`tools/prepare_ffmpeg.ps1`；也可设置 `-DKIRAKARA_FFMPEG_ROOT=<SDK目录>`。
+构建会将五个 FFmpeg DLL 和现有许可材料放在宿主 DLL 同目录，部署时一起复制。
+
 ## 构建
 
 最简单的方式是：
@@ -47,6 +51,17 @@ ctest --test-dir build --output-on-failure
 ```
 
 ## 生成 Smoke 媒体
+
+H.264 / AV1 / H.265 / Opus 回归样片使用 `tools/make_codec_fixtures.ps1` 生成，默认目录为
+`build-ninja/codec-fixtures`，用 `-OutputDirectory build/codec-fixtures` 可适配上述构建目录。
+生成后重新配置 CMake 才会注册媒体测试。支持这两种视频格式的显卡上可配置
+`-DKIRAKARA_CODEC_REQUIRE_HARDWARE=ON`，要求 8/10 位样片全部输出硬件帧。
+其中 H.264 Hi10P 单独验证软件回退，普通 8 位 H.264 要求硬解。
+
+`kirakara_show_playback_resource_probe` 对完整宿主播放采样，统计机器归一化 CPU、工作集、
+提交内存、进程 GPU 各引擎占用及帧率。`tools/compare_playback_resources.ps1` 用相同探针程序、
+相同媒体/音轨/1080p 输出对比两个 DLL 版本，交替运行三轮，预热四秒后各采样十二秒。
+本机视频占用实测记录位于 `artifacts/ffmpeg-comparison`。
 
 仓库不附带测试视频。安装 FFmpeg 后可以生成两组短视频和音频：
 
