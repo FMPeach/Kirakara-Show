@@ -814,7 +814,7 @@ int wmain(int argc, wchar_t** argv) {
 
     expect(show_host_load_with_options(host,
             argv[5], argv[6], argv[7], argv[8],
-            SHOW_CLOCK_AUDIO_MASTER, SHOW_TRANSITION_SEAMLESS),
+            SHOW_CLOCK_VIDEO_MASTER, SHOW_TRANSITION_SEAMLESS),
         "unprepared second song should load");
     milestone("second song loaded");
     show_host_play(host);

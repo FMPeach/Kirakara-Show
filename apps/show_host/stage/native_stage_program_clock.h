@@ -86,6 +86,10 @@ private:
     NativeStageProgramClockConfig config_;
     mutable std::mutex mutex_;
     NativeStageProgramClockState state_{NativeStageProgramClockState::idle};
+    // A user pause can interrupt either normal playback or an internal
+    // priming/buffering wait. Preserve that distinction so resume cannot
+    // briefly restart audio against a queue that still lacks runway.
+    bool paused_requires_video_runway_{};
     double position_seconds_{};
     double anchor_position_seconds_{};
     double anchor_monotonic_seconds_{};

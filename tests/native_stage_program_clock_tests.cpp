@@ -84,12 +84,28 @@ int main() {
     expect_near(update.position_seconds, 1.1,
         "buffering advanced beyond the last covered position");
 
+    // A user pause while transport is already buffering is still a user
+    // pause. Resume must remain gated by video coverage instead of briefly
+    // restarting audio and falling back into buffering again.
+    input.playback_requested = false;
+    input.monotonic_seconds = 100.25;
+    update = clock.update(input);
+    expect(update.state == NativeStageProgramClockState::paused,
+        "user pause during buffering did not enter paused state");
+    input.playback_requested = true;
+    input.monotonic_seconds = 100.275;
+    update = clock.update(input);
+    expect(update.state == NativeStageProgramClockState::priming,
+        "buffered pause resume bypassed video gating");
+    expect(!update.request_audio_play,
+        "buffered pause resume restarted audio without video coverage");
+
     input.monotonic_seconds = 100.3;
     input.audio_position_seconds = 1.2;
     input.video_buffer = ready_buffer(1.08, 1.16, 3);
     update = clock.update(input);
-    expect(update.state == NativeStageProgramClockState::buffering,
-        "underflow recovered without a stable runway");
+    expect(update.state == NativeStageProgramClockState::priming,
+        "paused underflow recovered without a stable runway");
 
     input.monotonic_seconds = 100.4;
     input.video_buffer = ready_buffer(1.08, 1.24, 6);

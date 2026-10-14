@@ -118,6 +118,7 @@ void NativeStageProgramClock::reset(
     std::lock_guard lock(mutex_);
     position_seconds_ = finite_non_negative(position_seconds);
     state_ = NativeStageProgramClockState::idle;
+    paused_requires_video_runway_ = false;
     anchor(position_seconds_, monotonic_seconds);
 }
 
@@ -126,6 +127,7 @@ void NativeStageProgramClock::discontinuity(
     std::lock_guard lock(mutex_);
     position_seconds_ = finite_non_negative(position_seconds);
     state_ = NativeStageProgramClockState::idle;
+    paused_requires_video_runway_ = false;
     anchor(position_seconds_, monotonic_seconds);
 }
 
@@ -133,6 +135,11 @@ void NativeStageProgramClock::pause_at(
         double position_seconds, double monotonic_seconds) {
     std::lock_guard lock(mutex_);
     position_seconds_ = finite_non_negative(position_seconds);
+    if (state_ != NativeStageProgramClockState::paused) {
+        paused_requires_video_runway_ =
+            state_ == NativeStageProgramClockState::priming
+            || state_ == NativeStageProgramClockState::buffering;
+    }
     if (state_ != NativeStageProgramClockState::idle
             && state_ != NativeStageProgramClockState::ended
             && state_ != NativeStageProgramClockState::fatal_error) {
@@ -153,6 +160,11 @@ NativeStageProgramClockUpdate NativeStageProgramClock::update(
         input.has_audio_stream || input.has_audio_clock;
 
     if (!input.playback_requested) {
+        if (state_ != NativeStageProgramClockState::paused) {
+            paused_requires_video_runway_ =
+                state_ == NativeStageProgramClockState::priming
+                || state_ == NativeStageProgramClockState::buffering;
+        }
         if (state_ == NativeStageProgramClockState::playing
                 && input.has_audio_clock) {
             position_seconds_ = std::max(position_seconds_, audio_position);
@@ -201,8 +213,10 @@ NativeStageProgramClockUpdate NativeStageProgramClock::update(
 
     if (state_ == NativeStageProgramClockState::paused) {
         if (video_ready_to_resume(
-                input, position_seconds_, config_, false)) {
+                input, position_seconds_, config_,
+                paused_requires_video_runway_)) {
             state_ = NativeStageProgramClockState::playing;
+            paused_requires_video_runway_ = false;
             anchor(position_seconds_, now);
             auto update = result();
             if (has_audio_stream) {
@@ -215,6 +229,7 @@ NativeStageProgramClockUpdate NativeStageProgramClock::update(
         state_ = input.has_video
             ? NativeStageProgramClockState::priming
             : NativeStageProgramClockState::playing;
+        paused_requires_video_runway_ = false;
         anchor(position_seconds_, now);
     } else if (state_ == NativeStageProgramClockState::idle) {
         state_ = input.has_video
