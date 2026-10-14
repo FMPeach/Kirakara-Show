@@ -454,9 +454,10 @@ SHOW_HOST_API uint32_t show_host_read_cast_pipeline_trace(
 SHOW_HOST_API bool show_host_get_cast_capability_report(
     ShowHostHandle handle,
     ShowHostCastCapabilityReport* report);
-/// Diagnostic count of video-source owners in the active Cast topology.
-/// A loaded Cast program must report exactly one: the Cast SourceReader.
-/// After Cast stops, the restored MediaEngine is the single owner instead.
+/// Diagnostic count of authoritative video-source owners in the active
+/// output topology. A loaded Cast program reports its Cast SourceReader;
+/// local output reports either Native Stage or the embedded-audio
+/// MediaEngine compatibility path. A normal loaded program reports one.
 SHOW_HOST_API uint32_t show_host_get_active_video_decoder_owners(
     ShowHostHandle handle);
 

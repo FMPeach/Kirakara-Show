@@ -796,9 +796,8 @@ bool prime_native_stage_video(ShowHost& host, double position) {
             || !configure_unified_native_stage(host)) {
         return false;
     }
-    // if (!host.playback.player.has_future_data()) return false;
     // Gate on the Stage decoder producing its first frame, not on the
-    // MediaEngine clock.  The clock player (video-master) reaches
+    // legacy MediaEngine clock. The old video-master clock reached
     // HAVE_FUTURE_DATA much later on external HTTP sources; gating on it made
     // handle_play skip the gate, play the clock immediately, and later
     // handle_video_can_play seek audio/video to the drifted clock position
