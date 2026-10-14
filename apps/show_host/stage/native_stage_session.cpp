@@ -607,10 +607,17 @@ bool activate_native_stage_program_clock(
             || !host.playback.current_media.loaded
             || host.playback.current_media.video.empty()
             || !host.playback.audio->is_open()
-            || !has_requested_native_stage_output(host)
             || !configure_unified_native_stage(host)) {
         return false;
     }
+    // Independent audio supplies both supported program clocks. Once the
+    // Source Reader can own the native picture, keeping MediaEngine open only
+    // decodes the same video a second time.
+    host.playback.player.close();
+    host.output_transition.media_engine_video_source_active.store(
+        false, std::memory_order_release);
+    host.output_transition.native_stage_video_source_active.store(
+        true, std::memory_order_release);
     host.native_stage.program_clock_active = true;
     host.native_stage.program_clock.discontinuity(
         position_seconds, native_stage_monotonic_seconds());
@@ -620,6 +627,8 @@ bool activate_native_stage_program_clock(
 void deactivate_native_stage_program_clock(
         ShowHost& host, double position_seconds) {
     host.native_stage.program_clock_active = false;
+    host.output_transition.native_stage_video_source_active.store(
+        false, std::memory_order_release);
     host.native_stage.program_clock.reset(
         position_seconds, native_stage_monotonic_seconds());
 }

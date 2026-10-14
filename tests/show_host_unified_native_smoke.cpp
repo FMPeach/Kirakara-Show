@@ -603,6 +603,8 @@ int wmain(int argc, wchar_t** argv) {
         "first song should be playing");
     expect(show_host_get_position(host) > 0.5,
         "first song clock should advance");
+    expect(show_host_get_active_video_decoder_owners(host) == 1,
+        "native Stage should expose exactly one current video owner");
     const auto position_before_inactive_cast_stop =
         show_host_get_position(host);
     show_host_stop_cast_stream(host);

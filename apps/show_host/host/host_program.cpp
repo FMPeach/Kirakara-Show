@@ -286,19 +286,6 @@ bool handle_load(ShowHost& host, const LoadRequest& request) {
         end_cast_load_keepalive(host.cast, load_keepalive_active);
         return false;
     }
-    const bool cast_owns_video = has_ts_stage_output(host);
-    if (!cast_owns_video && !open_media_engine_video(host, request.video)) {
-        log_line("handle_load: player.open failed");
-        suspend_native_stage_standby_video(host, false);
-        fail_program_transition(host);
-        host.render_loop_active = false;
-        host.playback.state.store(SHOW_STATE_IDLE);
-        if (load_keepalive_active) publish_current_cast_program(host);
-        end_cast_load_keepalive(host.cast, load_keepalive_active);
-        return false;
-    }
-    host.output_transition.cast_media_engine_detached = cast_owns_video;
-
     if (prepared && prepared->audio_ready) {
         if (prepared->audio) {
             host.playback.audio = std::shared_ptr<AudioPlayer>(
@@ -313,6 +300,24 @@ bool handle_load(ShowHost& host, const LoadRequest& request) {
         static_cast<void>(
             host.playback.audio->open(host.playback.accompaniment_path));
     }
+
+    const bool cast_owns_video = has_ts_stage_output(host);
+    const bool native_video_candidate = !cast_owns_video
+        && !request.video.empty()
+        && host.playback.audio->is_open()
+        && configure_unified_native_stage(host);
+    if (!cast_owns_video && !native_video_candidate
+            && !open_media_engine_video(host, request.video)) {
+        log_line("handle_load: player.open failed");
+        suspend_native_stage_standby_video(host, false);
+        fail_program_transition(host);
+        host.render_loop_active = false;
+        host.playback.state.store(SHOW_STATE_IDLE);
+        if (load_keepalive_active) publish_current_cast_program(host);
+        end_cast_load_keepalive(host.cast, load_keepalive_active);
+        return false;
+    }
+    host.output_transition.cast_media_engine_detached = cast_owns_video;
 
     apply_audio_processing(host);
     static_cast<void>(host.playback.audio->set_local_output_enabled(
@@ -344,8 +349,21 @@ bool handle_load(ShowHost& host, const LoadRequest& request) {
     if (!promoted_native_video) {
         suspend_native_stage_standby_video(host, false);
     }
-    if (!cast_owns_video) {
-        static_cast<void>(activate_native_stage_program_clock(host, 0.0));
+    if (native_video_candidate
+            && !activate_native_stage_program_clock(host, 0.0)) {
+        // Configuration was already proven above; retain the old compatible
+        // MediaEngine path if device state changed during publication.
+        if (!open_media_engine_video(host, request.video)) {
+            log_line("handle_load: native Stage activation and player fallback failed");
+            suspend_native_stage_standby_video(host, false);
+            fail_program_transition(host);
+            host.render_loop_active = false;
+            host.playback.state.store(SHOW_STATE_IDLE);
+            if (load_keepalive_active) publish_current_cast_program(host);
+            end_cast_load_keepalive(host.cast, load_keepalive_active);
+            return false;
+        }
+        apply_audio_processing(host);
     }
     bump_playback_revision(host);
     if (cast_owns_video) {

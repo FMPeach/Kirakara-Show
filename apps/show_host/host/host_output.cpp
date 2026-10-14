@@ -116,6 +116,8 @@ bool handle_start_cast_stream(ShowHost& host, std::uint16_t port) {
         host.playback.current_media.loaded
             && !host.playback.current_media.video.empty(),
         std::memory_order_release);
+    host.output_transition.native_stage_video_source_active.store(
+        false, std::memory_order_release);
     if (takeover_playing && host.playback.audio->is_open()) {
         static_cast<void>(host.playback.audio->pause());
     }
@@ -132,14 +134,13 @@ void handle_stop_cast_stream(ShowHost& host) {
     if (!has_ts_stage_output(host)) return;
 
     const auto restore_state = host.playback.state.load();
-    const bool restore_native_program_clock =
+    bool restore_native_program_clock =
         host.native_stage.program_clock_active
         && host.playback.current_media.loaded
         && !host.playback.current_media.video.empty()
         && host.playback.audio->is_open();
-    const bool restore_media_engine =
-        !restore_native_program_clock
-        && host.output_transition.cast_media_engine_detached
+    const bool media_engine_was_detached =
+        host.output_transition.cast_media_engine_detached
         && host.playback.current_media.loaded
         && !host.playback.current_media.video.empty();
     static_cast<void>(host.playback.audio->pause());
@@ -154,10 +155,19 @@ void handle_stop_cast_stream(ShowHost& host) {
     host.playback.position.store(restore_position);
     host.playback.video_buffering.store(false);
 
-    if (restore_native_program_clock) {
-        discontinuity_native_stage_program_clock(host, restore_position);
+    if (!restore_native_program_clock) {
+        restore_native_program_clock =
+            activate_native_stage_program_clock(host, restore_position);
     }
 
+    if (restore_native_program_clock) {
+        discontinuity_native_stage_program_clock(host, restore_position);
+        host.output_transition.native_stage_video_source_active.store(
+            true, std::memory_order_release);
+    }
+
+    const bool restore_media_engine =
+        !restore_native_program_clock && media_engine_was_detached;
     bool media_engine_ready = !restore_media_engine;
     if (restore_media_engine) {
         media_engine_ready = open_media_engine_video(
