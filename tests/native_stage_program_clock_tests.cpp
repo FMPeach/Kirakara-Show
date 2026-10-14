@@ -32,6 +32,16 @@ NativeStageVideoBufferSnapshot ready_buffer(
 }  // namespace
 
 int main() {
+    MfD3D11VideoBufferStatus sparse_status;
+    sparse_status.frame_count = 5;
+    sparse_status.buffered_start_seconds = 0.0;
+    sparse_status.buffered_end_seconds = 0.083;
+    sparse_status.queued_end_seconds = 0.583;
+    sparse_status.availability = MfD3D11VideoAvailability::ready;
+    const auto sparse_snapshot = native_stage_buffer_snapshot(sparse_status);
+    expect_near(sparse_snapshot.end_seconds, 0.583,
+        "Native Stage did not bridge an already-decoded sparse PTS gap");
+
     NativeStageProgramClock clock;
     NativeStageProgramClockInput input;
     input.monotonic_seconds = 100.0;
@@ -90,6 +100,38 @@ int main() {
         "underflow recovery did not restart aligned audio");
     expect_near(update.audio_seek_position_seconds, 1.1,
         "underflow recovery moved the frozen position");
+
+    // A 120 fps source fills the bounded five-frame Native queue before it
+    // spans 100 ms. Reaching that bounded capacity must still release the
+    // clock instead of leaving high-frame-rate media in priming forever.
+    clock.discontinuity(2.0, 150.0);
+    input.monotonic_seconds = 150.0;
+    input.audio_position_seconds = 2.0;
+    input.audio_end_of_stream = false;
+    input.video_buffer = ready_buffer(1.995, 2.04, 5);
+    update = clock.update(input);
+    expect(update.state == NativeStageProgramClockState::playing,
+        "full high-frame-rate queue did not release priming");
+
+    // A promoted standby queue can still contain its full bounded frame
+    // count even when every frame is already at (or behind) the frozen clock.
+    // Frame count alone must not trigger a seek/play loop with no forward
+    // coverage; leave the decoder running until a genuinely future frame
+    // arrives.
+    clock.discontinuity(2.081, 160.0);
+    input.monotonic_seconds = 160.0;
+    input.audio_position_seconds = 2.081;
+    input.video_buffer = ready_buffer(2.0, 2.083, 5);
+    update = clock.update(input);
+    expect(update.state == NativeStageProgramClockState::priming,
+        "stale full queue incorrectly released priming");
+    expect(!update.request_audio_play,
+        "stale full queue incorrectly started audio");
+    input.monotonic_seconds = 160.1;
+    input.video_buffer = ready_buffer(2.0, 2.125, 5);
+    update = clock.update(input);
+    expect(update.state == NativeStageProgramClockState::playing,
+        "full queue with forward coverage did not release priming");
 
     // Audio-master media keeps the final video texture but continues lyrics
     // and program time until the authoritative audio EOF.

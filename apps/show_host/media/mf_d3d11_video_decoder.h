@@ -82,6 +82,11 @@ struct MfD3D11VideoBufferStatus {
     double buffered_duration_seconds{};
     double buffered_start_seconds{};
     double buffered_end_seconds{};
+    // End of the newest already-decoded sample, even when the source leaves
+    // a deliberate PTS gap between pictures. Native Stage can hold the
+    // previous picture through that gap; Cast keeps using the stricter
+    // contiguous watermark above.
+    double queued_end_seconds{};
     double source_duration_seconds{};
     bool end_of_stream{};
     // True while the worker is inside Source Reader for this exact

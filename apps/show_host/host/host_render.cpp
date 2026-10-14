@@ -36,6 +36,9 @@ double media_time(const ShowHost& host) {
         // protects low-frequency control-thread transitions.
         return host.playback.position.load(std::memory_order_relaxed);
     }
+    if (native_stage_program_clock_is_active(host)) {
+        return host.native_stage.program_clock.position_seconds();
+    }
     if (host.playback.video_master_clock) return host.playback.player.current_time();
     if (host.playback.audio->is_open()) return host.playback.audio->position();
     return host.playback.player.current_time();
@@ -46,6 +49,9 @@ double media_time(const ShowHost& host) {
 double playback_time(const ShowHost& host) {
     if (has_ts_stage_output(host)) {
         return host.playback.position.load(std::memory_order_relaxed);
+    }
+    if (native_stage_program_clock_is_active(host)) {
+        return host.native_stage.program_clock.position_seconds();
     }
     const auto time = host.playback.video_buffering.load()
         ? host.playback.video_buffering_position.load(std::memory_order_relaxed)
@@ -107,7 +113,10 @@ void update_cached_position(ShowHost& host) {
     // duration is therefore zero; do not transiently replace the decoder's
     // video duration with the auxiliary audio duration before the Cast tick
     // publishes the authoritative value again.
-    if (has_ts_stage_output(host)) return;
+    if (has_ts_stage_output(host)
+            || native_stage_program_clock_is_active(host)) {
+        return;
+    }
     const auto audio_duration = host.playback.audio->duration();
     const auto video_duration = host.playback.player.duration();
     host.playback.duration.store(host.playback.video_master_clock && video_duration > 0.0

@@ -1460,9 +1460,11 @@ struct MfD3D11VideoDecoder::Impl {
         status.format_change_count = decoded.format_change_count;
         if (decoded.textures.empty()) return status;
         const auto& first = decoded.textures.front();
+        const auto& last = decoded.textures.back();
         status.buffered_start_seconds = first->timestamp_seconds();
         status.buffered_end_seconds =
             contiguous_buffer_end_seconds(decoded);
+        status.queued_end_seconds = frame_end_seconds(*last);
         status.buffered_duration_seconds = std::max(0.0,
             status.buffered_end_seconds - status.buffered_start_seconds);
         return status;

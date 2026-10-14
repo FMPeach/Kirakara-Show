@@ -30,6 +30,10 @@ struct NativeStageProgramClockConfig {
     // Underflow is entered only after the current time is no longer covered.
     // This runway is therefore an exit hysteresis, never an early-pause gate.
     double recovery_runway_seconds{0.100};
+    // The Native BGRA queue is intentionally shallow to cap 4K memory. Very
+    // high-frame-rate sources can fill that queue before spanning 100 ms, so
+    // a full historical five-frame queue is also a valid recovery runway.
+    std::size_t minimum_recovery_frames{5};
     double timestamp_tolerance_seconds{1.0 / 240.0};
 };
 

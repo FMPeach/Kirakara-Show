@@ -75,8 +75,14 @@ bool video_ready_to_resume(
                 input.video_buffer, config.timestamp_tolerance_seconds)) {
         return true;
     }
-    return buffer_runway(input.video_buffer, position_seconds)
-        >= finite_non_negative(config.recovery_runway_seconds);
+    const auto runway = buffer_runway(
+        input.video_buffer, position_seconds);
+    return runway >= finite_non_negative(config.recovery_runway_seconds)
+        || (runway > finite_non_negative(
+                config.timestamp_tolerance_seconds)
+            && input.video_buffer.frame_count
+                >= std::max<std::size_t>(
+                    1, config.minimum_recovery_frames));
 }
 
 bool video_is_truly_unavailable(
@@ -309,7 +315,12 @@ NativeStageVideoBufferSnapshot native_stage_buffer_snapshot(
     NativeStageVideoBufferSnapshot snapshot;
     snapshot.frame_count = status.frame_count;
     snapshot.start_seconds = status.buffered_start_seconds;
-    snapshot.end_seconds = status.buffered_end_seconds;
+    // A decoded future sample proves that the preceding picture is safe to
+    // hold until that PTS. Treat such low-frame-rate/VFR gaps as buffered
+    // presentation time rather than transport starvation. Cast deliberately
+    // retains its stricter contiguous watermark.
+    snapshot.end_seconds = std::max(
+        status.buffered_end_seconds, status.queued_end_seconds);
     snapshot.source_duration_seconds = status.source_duration_seconds;
     snapshot.availability = status.availability;
     snapshot.read_in_flight = status.read_in_flight;

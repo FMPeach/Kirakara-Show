@@ -249,6 +249,7 @@ bool handle_load(ShowHost& host, const LoadRequest& request) {
     // Cast its published snapshot owns the old player until that frame ends.
     if (!load_keepalive_active && previous_audio) previous_audio->close();
     close_video_outputs(host);
+    deactivate_native_stage_program_clock(host, 0.0);
     begin_program_transition(host, request);
     host.native_stage.stage_video_decoder.suspend();
     host.output_transition.cast_video_source_active.store(false, std::memory_order_release);
@@ -343,6 +344,9 @@ bool handle_load(ShowHost& host, const LoadRequest& request) {
     if (!promoted_native_video) {
         suspend_native_stage_standby_video(host, false);
     }
+    if (!cast_owns_video) {
+        static_cast<void>(activate_native_stage_program_clock(host, 0.0));
+    }
     bump_playback_revision(host);
     if (cast_owns_video) {
         publish_current_cast_program(host);
@@ -398,6 +402,11 @@ void handle_play(ShowHost& host) {
             && requested_start_position >= 0.0
         ? requested_start_position
         : 0.0;
+    const bool native_program_clock =
+        native_stage_program_clock_is_active(host);
+    if (native_program_clock && !resume_from_pause) {
+        discontinuity_native_stage_program_clock(host, start_position);
+    }
     const bool wait_for_native_video = !host.native_stage.stage_video_frame_available
         && prime_native_stage_video(host, start_position);
     // Cast handoff: hold the program clock (and the audio clock that drives
@@ -451,6 +460,12 @@ void handle_play(ShowHost& host) {
         host.playback.video_buffering.store(wait_for_cast_video);
         host.playback.video_buffering_position.store(
             start_position, std::memory_order_relaxed);
+    } else if (native_program_clock) {
+        // NativeStageProgramClock releases and aligns audio after the Stage
+        // decoder reaches its start/recovery watermark. MediaEngine remains
+        // a temporary compatibility object but no longer drives playback.
+        static_cast<void>(host.playback.audio->pause());
+        host.playback.player.pause();
     } else if (host.playback.audio->is_open()) {
         static_cast<void>(host.playback.audio->seek(start_position));
         seek_video_outputs(host, start_position);
@@ -470,7 +485,8 @@ void handle_play(ShowHost& host) {
             seek_video_outputs(host, start_position);
         }
     }
-    if (!wait_for_native_video && !wait_for_cast_video) {
+    if (!native_program_clock
+            && !wait_for_native_video && !wait_for_cast_video) {
         play_video_outputs(host);
     }
     host.playback.has_paused_position = false;
@@ -489,6 +505,8 @@ void handle_pause(ShowHost& host) {
         // before the next Cast render tick.
         host.cast.program_clock.pause_at(
             position, cast_monotonic_seconds());
+    } else {
+        pause_native_stage_program_clock(host, position);
     }
     host.playback.video_buffering.store(false);
     clear_native_video_start_gate(host);
@@ -523,6 +541,8 @@ void handle_stop(ShowHost& host) {
     if (has_ts_stage_output(host)) {
         host.cast.program_clock.discontinuity(
             0.0, cast_monotonic_seconds());
+    } else {
+        discontinuity_native_stage_program_clock(host, 0.0);
     }
     bump_video_timeline_revision(host);
     publish_current_cast_timeline(host);
@@ -566,6 +586,7 @@ void handle_media_ended(ShowHost& host) {
 
 void handle_video_waiting(ShowHost& host) {
     if (has_ts_stage_output(host)) return;
+    if (native_stage_program_clock_is_active(host)) return;
     if (host.playback.state.load() != SHOW_STATE_PLAYING) {
         return;
     }
@@ -598,6 +619,7 @@ void handle_video_waiting(ShowHost& host) {
 
 void handle_video_can_play(ShowHost& host) {
     if (has_ts_stage_output(host)) return;
+    if (native_stage_program_clock_is_active(host)) return;
     if (host.native_stage.native_video_start_pending) return;
     if (!host.playback.video_master_clock || !host.playback.video_buffering.load()
             || !host.playback.audio->is_open()) {
@@ -619,6 +641,7 @@ void handle_video_can_play(ShowHost& host) {
 
 void maintain_video_master_sync(ShowHost& host) {
     if (has_ts_stage_output(host)) return;
+    if (native_stage_program_clock_is_active(host)) return;
     if (host.native_stage.native_video_start_pending) return;
     if (!host.playback.video_master_clock || !host.playback.audio->is_open()
             || host.playback.state.load() != SHOW_STATE_PLAYING) {
@@ -662,15 +685,20 @@ void handle_seek(ShowHost& host, double seconds) {
         ensure_stage_surface_visible(host);
     }
     const bool cast_active = has_ts_stage_output(host);
+    const bool native_clock_active =
+        native_stage_program_clock_is_active(host);
     if (cast_active) {
         host.cast.program_clock.discontinuity(
             seconds, cast_monotonic_seconds());
         static_cast<void>(host.playback.audio->seek(std::max(0.0,
             seconds - host.playback.audio_processing.clock_offset_seconds)));
+    } else if (native_clock_active) {
+        discontinuity_native_stage_program_clock(host, seconds);
+        static_cast<void>(host.playback.audio->pause());
     } else {
         static_cast<void>(host.playback.audio->seek(seconds));
+        seek_video_outputs(host, seconds);
     }
-    seek_video_outputs(host, seconds);
     if (was_playing) {
         if (cast_active) {
             static_cast<void>(host.playback.audio->pause());
@@ -681,6 +709,22 @@ void handle_seek(ShowHost& host, double seconds) {
                 wait_for_video,
                 seconds,
                 std::chrono::steady_clock::now());
+            host.playback.video_buffering.store(wait_for_video);
+            host.playback.video_buffering_position.store(
+                seconds, std::memory_order_relaxed);
+        } else if (native_clock_active) {
+            const bool wait_for_video = host.playback.current_media.loaded
+                && !host.playback.current_media.video.empty();
+            host.native_stage.native_video_start_pending = wait_for_video;
+            host.native_stage.native_video_start_position =
+                wait_for_video ? seconds : 0.0;
+            host.native_stage.native_video_start_started = wait_for_video
+                ? std::chrono::steady_clock::now()
+                : std::chrono::steady_clock::time_point{};
+            host.native_stage.native_video_start_diagnostics_qpc =
+                wait_for_video
+                    && host.native_stage.pipeline_diagnostics.enabled()
+                ? NativeStagePipelineDiagnostics::qpc_now() : 0;
             host.playback.video_buffering.store(wait_for_video);
             host.playback.video_buffering_position.store(
                 seconds, std::memory_order_relaxed);
@@ -740,6 +784,8 @@ void handle_key(ShowHost& host, int key_semitones) {
 
 void handle_audio_clock_offset(ShowHost& host, double seconds) {
     const auto cast_position = host.cast.program_clock.position_seconds();
+    const auto native_position =
+        host.native_stage.program_clock.position_seconds();
     host.playback.audio_processing.clock_offset_seconds =
         clamp_audio_clock_offset(seconds);
     publish_current_cast_timeline(host);
@@ -752,6 +798,16 @@ void handle_audio_clock_offset(ShowHost& host, double seconds) {
         if (host.playback.state.load() == SHOW_STATE_PLAYING
                 && host.cast.program_clock.state()
                     == CastProgramClockState::playing) {
+            static_cast<void>(host.playback.audio->play());
+        }
+    } else if (native_stage_program_clock_is_active(host)
+            && host.playback.audio->is_open()) {
+        static_cast<void>(host.playback.audio->seek(std::max(0.0,
+            native_position
+                - host.playback.audio_processing.clock_offset_seconds)));
+        if (host.playback.state.load() == SHOW_STATE_PLAYING
+                && host.native_stage.program_clock.state()
+                    == NativeStageProgramClockState::playing) {
             static_cast<void>(host.playback.audio->play());
         }
     }
