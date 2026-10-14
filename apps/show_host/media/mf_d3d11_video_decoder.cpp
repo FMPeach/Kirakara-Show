@@ -4,6 +4,7 @@
 #include "../host/host_utils.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <deque>
@@ -1150,6 +1151,11 @@ struct MfD3D11VideoDecoder::Impl {
     MfD3D11VideoDecoderConfig config;
     CastPipelineDiagnostics* diagnostics{};
     HANDLE retry_wake_event{};
+    bool read_in_flight{};
+    std::chrono::steady_clock::time_point read_started{};
+    std::wstring read_source;
+    std::uint64_t read_timeline_revision{};
+    std::uint64_t read_seek_epoch{};
 
     bool start(
             void* borrowed_device,
@@ -1180,6 +1186,11 @@ struct MfD3D11VideoDecoder::Impl {
         stop_requested = false;
         startup_complete = false;
         startup_succeeded = false;
+        read_in_flight = false;
+        read_started = {};
+        read_source.clear();
+        read_timeline_revision = 0;
+        read_seek_epoch = 0;
         try {
             worker = std::thread([this] { worker_main(); });
         } catch (...) {
@@ -1206,6 +1217,11 @@ struct MfD3D11VideoDecoder::Impl {
         diagnostics = nullptr;
         directive = {};
         decoded = {};
+        read_in_flight = false;
+        read_started = {};
+        read_source.clear();
+        read_timeline_revision = 0;
+        read_seek_epoch = 0;
         stop_requested = false;
         return false;
     }
@@ -1234,6 +1250,11 @@ struct MfD3D11VideoDecoder::Impl {
                 diagnostics = nullptr;
                 directive = {};
                 decoded = {};
+                read_in_flight = false;
+                read_started = {};
+                read_source.clear();
+                read_timeline_revision = 0;
+                read_seek_epoch = 0;
                 return;
             }
             stop_requested = true;
@@ -1249,6 +1270,11 @@ struct MfD3D11VideoDecoder::Impl {
         diagnostics = nullptr;
         directive = {};
         decoded = {};
+        read_in_flight = false;
+        read_started = {};
+        read_source.clear();
+        read_timeline_revision = 0;
+        read_seek_epoch = 0;
         stop_requested = false;
         startup_complete = false;
         startup_succeeded = false;
@@ -1416,6 +1442,18 @@ struct MfD3D11VideoDecoder::Impl {
         }
         status.frame_count = decoded.textures.size();
         status.end_of_stream = decoded.end_of_stream;
+        if (read_in_flight
+                && read_source == source
+                && read_timeline_revision == timeline_revision
+                && read_seek_epoch == decoded.seek_epoch) {
+            status.read_in_flight = true;
+            if (read_started.time_since_epoch().count() != 0) {
+                status.read_wait_seconds = std::max(0.0,
+                    std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - read_started)
+                        .count());
+            }
+        }
         status.availability = decoded.availability;
         status.hresult = static_cast<std::int32_t>(decoded.hresult);
         status.source_duration_seconds = decoded.source_duration_seconds;
@@ -1590,8 +1628,26 @@ struct MfD3D11VideoDecoder::Impl {
                         correlation_id,
                         work.timeline_revision);
                 }
+                {
+                    std::lock_guard lock(mutex);
+                    read_in_flight = true;
+                    read_started = std::chrono::steady_clock::now();
+                    read_source = work.source;
+                    read_timeline_revision = work.timeline_revision;
+                    read_seek_epoch = work.seek_epoch;
+                }
                 auto result = session.read_next_texture(
                     correlation_id, work.timeline_revision);
+                {
+                    std::lock_guard lock(mutex);
+                    if (read_source == work.source
+                            && read_timeline_revision
+                                == work.timeline_revision
+                            && read_seek_epoch == work.seek_epoch) {
+                        read_in_flight = false;
+                        read_started = {};
+                    }
+                }
                 if (result.status == DecoderReadStatus::end_of_stream) {
                     std::lock_guard lock(mutex);
                     if (matches(decoded, work)) {

@@ -232,6 +232,9 @@ int wmain(int argc, wchar_t** argv) {
     expect(idle_status.frame_count == 0
             && idle_status.buffered_duration_seconds == 0.0,
         "idle decoder reported a non-empty buffer");
+    expect(!idle_status.read_in_flight
+            && idle_status.read_wait_seconds == 0.0,
+        "idle decoder reported an in-flight source read");
 
     if (argc > 1) {
         const std::wstring source = argv[1];

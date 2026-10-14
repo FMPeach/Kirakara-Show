@@ -84,6 +84,12 @@ struct MfD3D11VideoBufferStatus {
     double buffered_end_seconds{};
     double source_duration_seconds{};
     bool end_of_stream{};
+    // True while the worker is inside Source Reader for this exact
+    // source/revision/seek epoch. A progressive HTTP read may block without
+    // returning a retryable HRESULT, so queue coverage alone cannot
+    // distinguish an ordinary shallow buffer from a real transport wait.
+    bool read_in_flight{};
+    double read_wait_seconds{};
     MfD3D11VideoAvailability availability{
         MfD3D11VideoAvailability::idle};
     std::int32_t hresult{};

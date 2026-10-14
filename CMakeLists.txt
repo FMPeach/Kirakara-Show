@@ -130,6 +130,14 @@ if(KIRAKARA_BUILD_TESTS)
     add_test(NAME kirakara_show_cast_program_clock_tests
         COMMAND kirakara_show_cast_program_clock_tests)
 
+    add_executable(kirakara_show_native_stage_program_clock_tests
+        tests/native_stage_program_clock_tests.cpp
+        apps/show_host/stage/native_stage_program_clock.cpp)
+    target_compile_features(kirakara_show_native_stage_program_clock_tests
+        PRIVATE cxx_std_20)
+    add_test(NAME kirakara_show_native_stage_program_clock_tests
+        COMMAND kirakara_show_native_stage_program_clock_tests)
+
     add_executable(kirakara_show_cast_session_lifecycle_tests
         tests/cast_session_lifecycle_tests.cpp
         apps/show_host/cast/cast_session_lifecycle.cpp)
@@ -515,6 +523,7 @@ if(WIN32)
         apps/show_host/host/host_windows.cpp
         apps/show_host/host/host_commands.cpp
         apps/show_host/stage/native_stage_session.cpp
+        apps/show_host/stage/native_stage_program_clock.cpp
         apps/show_host/stage/native_stage_pipeline_diagnostics.cpp
         apps/show_host/stage/native_stage_trace.cpp
         apps/show_host/cast/cast_session.cpp
