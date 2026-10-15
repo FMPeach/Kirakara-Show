@@ -783,8 +783,12 @@ SHOW_HOST_API std::uint32_t show_host_get_active_video_decoder_owners(
         ShowHostHandle handle) {
     auto* host = as_host(handle);
     if (!host) return 0;
-    return (host->output_transition.media_engine_video_source_active.load(
-                std::memory_order_acquire) ? 1U : 0U)
+    const bool local_video_owner =
+        host->output_transition.media_engine_video_source_active.load(
+            std::memory_order_acquire)
+        || host->output_transition.native_stage_video_source_active.load(
+            std::memory_order_acquire);
+    return (local_video_owner ? 1U : 0U)
         + (host->output_transition.cast_video_source_active.load(
                 std::memory_order_acquire) ? 1U : 0U);
 }

@@ -4,6 +4,8 @@
 #include "../host/host_utils.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <deque>
@@ -11,6 +13,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -53,6 +56,7 @@ constexpr std::size_t kMaximumConfiguredQueueFrames = 64;
 constexpr double kMaximumConfiguredDecodeAheadSeconds = 2.0;
 constexpr auto kLocalGrowthFallbackRetry = std::chrono::seconds(1);
 constexpr auto kDefaultSourceRetry = std::chrono::milliseconds(100);
+constexpr auto kAsyncReaderFlushTimeout = std::chrono::seconds(5);
 
 MfD3D11VideoDecoderConfig sanitize_decoder_config(
         MfD3D11VideoDecoderConfig config) noexcept {
@@ -81,6 +85,11 @@ std::wstring source_url(const std::wstring& source) {
         return source;
     }
     return file_url_from_path(source);
+}
+
+bool is_http_source(const std::wstring& source) noexcept {
+    return source.starts_with(L"http://")
+        || source.starts_with(L"https://");
 }
 
 double sanitize_position(double seconds) {
@@ -112,6 +121,8 @@ struct DecodedTextureQueue {
     bool end_of_stream{};
     MfD3D11VideoAvailability availability{
         MfD3D11VideoAvailability::idle};
+    MfD3D11VideoSourceBufferingState source_buffering_state{
+        MfD3D11VideoSourceBufferingState::unknown};
     HRESULT hresult{S_OK};
     double source_duration_seconds{};
     std::uint64_t format_change_count{};
@@ -254,6 +265,7 @@ private:
 enum class DecoderReadStatus {
     frame,
     end_of_stream,
+    cancelled,
     retryable_failure,
     fatal_failure,
 };
@@ -281,6 +293,247 @@ DecoderReadStatus failure_status(HRESULT hr) {
         ? DecoderReadStatus::fatal_failure
         : DecoderReadStatus::retryable_failure;
 }
+
+class SourceBufferingSignal {
+public:
+    void clear() noexcept {
+        packed_.store(0, std::memory_order_release);
+    }
+
+    void activate(std::uint64_t generation) noexcept {
+        packed_.store(pack(generation,
+            MfD3D11VideoSourceBufferingState::not_buffering),
+            std::memory_order_release);
+    }
+
+    void deactivate(std::uint64_t generation) noexcept {
+        auto value = packed_.load(std::memory_order_acquire);
+        while (unpack_generation(value) == generation
+                && !packed_.compare_exchange_weak(
+                    value, 0,
+                    std::memory_order_acq_rel,
+                    std::memory_order_acquire)) {
+        }
+    }
+
+    void update(
+            std::uint64_t generation,
+            MfD3D11VideoSourceBufferingState state) noexcept {
+        auto value = packed_.load(std::memory_order_acquire);
+        const auto replacement = pack(generation, state);
+        while (unpack_generation(value) == generation
+                && !packed_.compare_exchange_weak(
+                    value, replacement,
+                    std::memory_order_acq_rel,
+                    std::memory_order_acquire)) {
+        }
+    }
+
+    [[nodiscard]] MfD3D11VideoSourceBufferingState state() const noexcept {
+        const auto value = packed_.load(std::memory_order_acquire);
+        if (unpack_generation(value) == 0) {
+            return MfD3D11VideoSourceBufferingState::unknown;
+        }
+        return static_cast<MfD3D11VideoSourceBufferingState>(
+            value & kStateMask);
+    }
+
+private:
+    static constexpr std::uint64_t kStateBits = 2;
+    static constexpr std::uint64_t kStateMask =
+        (std::uint64_t{1} << kStateBits) - 1;
+
+    static constexpr std::uint64_t pack(
+            std::uint64_t generation,
+            MfD3D11VideoSourceBufferingState state) noexcept {
+        return (generation << kStateBits)
+            | static_cast<std::uint64_t>(state);
+    }
+
+    static constexpr std::uint64_t unpack_generation(
+            std::uint64_t value) noexcept {
+        return value >> kStateBits;
+    }
+
+    std::atomic<std::uint64_t> packed_{};
+};
+
+struct AsyncSourceReaderCompletion {
+    HRESULT status{S_OK};
+    DWORD stream_index{};
+    DWORD flags{};
+    LONGLONG timestamp{};
+    IMFSample* sample{};
+};
+
+enum class AsyncSourceReaderWaitResult {
+    completed,
+    interrupted,
+    failed,
+};
+
+class SourceReaderCallback final : public IMFSourceReaderCallback {
+public:
+    static SourceReaderCallback* create(
+            std::shared_ptr<SourceBufferingSignal> signal,
+            std::uint64_t generation) {
+        auto* callback = new (std::nothrow) SourceReaderCallback(
+            std::move(signal), generation);
+        if (callback && callback->valid()) return callback;
+        if (callback) callback->Release();
+        return nullptr;
+    }
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(
+            REFIID iid, void** object) override {
+        if (!object) return E_POINTER;
+        *object = nullptr;
+        if (!IsEqualIID(iid, IID_IUnknown)
+                && !IsEqualIID(iid, __uuidof(IMFSourceReaderCallback))) {
+            return E_NOINTERFACE;
+        }
+        *object = static_cast<IMFSourceReaderCallback*>(this);
+        AddRef();
+        return S_OK;
+    }
+
+    ULONG STDMETHODCALLTYPE AddRef() override {
+        return references_.fetch_add(1, std::memory_order_relaxed) + 1;
+    }
+
+    ULONG STDMETHODCALLTYPE Release() override {
+        const auto remaining = references_.fetch_sub(
+            1, std::memory_order_acq_rel) - 1;
+        if (remaining == 0) delete this;
+        return remaining;
+    }
+
+    HRESULT STDMETHODCALLTYPE OnReadSample(
+            HRESULT status,
+            DWORD stream_index,
+            DWORD flags,
+            LONGLONG timestamp,
+            IMFSample* sample) override {
+        {
+            std::lock_guard lock(mutex_);
+            release(completion_.sample);
+            completion_.status = status;
+            completion_.stream_index = stream_index;
+            completion_.flags = flags;
+            completion_.timestamp = timestamp;
+            completion_.sample = sample;
+            if (completion_.sample) completion_.sample->AddRef();
+            read_pending_ = false;
+        }
+        SetEvent(read_ready_);
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE OnEvent(
+            DWORD, IMFMediaEvent* event) override {
+        MediaEventType type = MEUnknown;
+        if (event && SUCCEEDED(event->GetType(&type)) && signal_) {
+            if (type == MEBufferingStarted) {
+                signal_->update(generation_,
+                    MfD3D11VideoSourceBufferingState::buffering);
+            } else if (type == MEBufferingStopped) {
+                signal_->update(generation_,
+                    MfD3D11VideoSourceBufferingState::not_buffering);
+            }
+        }
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE OnFlush(DWORD) override {
+        {
+            std::lock_guard lock(mutex_);
+            read_pending_ = false;
+            release(completion_.sample);
+            completion_ = {};
+        }
+        SetEvent(flush_ready_);
+        return S_OK;
+    }
+
+    void begin_read() {
+        std::lock_guard lock(mutex_);
+        release(completion_.sample);
+        completion_ = {};
+        read_pending_ = true;
+        ResetEvent(read_ready_);
+    }
+
+    [[nodiscard]] AsyncSourceReaderWaitResult wait_for_read(
+            HANDLE interrupt_event,
+            AsyncSourceReaderCompletion& completion) {
+        HANDLE handles[2]{read_ready_, interrupt_event};
+        const DWORD count = interrupt_event ? 2U : 1U;
+        const auto wait = WaitForMultipleObjects(
+            count, handles, FALSE, INFINITE);
+        if (wait == WAIT_OBJECT_0) {
+            std::lock_guard lock(mutex_);
+            completion = completion_;
+            completion_.sample = nullptr;
+            return AsyncSourceReaderWaitResult::completed;
+        }
+        if (interrupt_event && wait == WAIT_OBJECT_0 + 1U) {
+            return AsyncSourceReaderWaitResult::interrupted;
+        }
+        return AsyncSourceReaderWaitResult::failed;
+    }
+
+    [[nodiscard]] bool read_pending() const {
+        std::lock_guard lock(mutex_);
+        return read_pending_;
+    }
+
+    void abandon_read() {
+        std::lock_guard lock(mutex_);
+        read_pending_ = false;
+        release(completion_.sample);
+        completion_ = {};
+    }
+
+    void begin_flush() noexcept { ResetEvent(flush_ready_); }
+
+    [[nodiscard]] bool wait_for_flush(
+            std::chrono::milliseconds timeout) const noexcept {
+        return WaitForSingleObject(
+            flush_ready_, static_cast<DWORD>(timeout.count()))
+            == WAIT_OBJECT_0;
+    }
+
+private:
+    SourceReaderCallback(
+            std::shared_ptr<SourceBufferingSignal> signal,
+            std::uint64_t generation)
+        : signal_(std::move(signal)), generation_(generation) {
+        read_ready_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        flush_ready_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    }
+
+    ~SourceReaderCallback() {
+        {
+            std::lock_guard lock(mutex_);
+            release(completion_.sample);
+        }
+        if (read_ready_) CloseHandle(read_ready_);
+        if (flush_ready_) CloseHandle(flush_ready_);
+    }
+
+    [[nodiscard]] bool valid() const noexcept {
+        return read_ready_ && flush_ready_;
+    }
+
+    std::atomic<ULONG> references_{1};
+    std::shared_ptr<SourceBufferingSignal> signal_;
+    std::uint64_t generation_{};
+    mutable std::mutex mutex_;
+    AsyncSourceReaderCompletion completion_;
+    bool read_pending_{};
+    HANDLE read_ready_{};
+    HANDLE flush_ready_{};
+};
 
 struct OutputTextureSlot {
     ID3D11Texture2D* texture{};
@@ -321,8 +574,14 @@ public:
     DecoderSession(
             ID3D11Device* device,
             MfD3D11VideoDecoderConfig config,
+            std::shared_ptr<SourceBufferingSignal> source_buffering_signal,
+            HANDLE interrupt_event,
             CastPipelineDiagnostics* diagnostics)
-        : device_(device), config_(config), diagnostics_(diagnostics) {}
+        : device_(device),
+          config_(config),
+          source_buffering_signal_(std::move(source_buffering_signal)),
+          interrupt_event_(interrupt_event),
+          diagnostics_(diagnostics) {}
     ~DecoderSession() { close(); release(device_manager_); }
 
     [[nodiscard]] bool initialize() {
@@ -359,8 +618,29 @@ public:
             return false;
         }
 
+        const bool use_async_reader =
+            config_.observe_source_buffering_events
+            && is_http_source(source);
+        if (use_async_reader) {
+            ++source_generation_;
+            if (source_generation_ == 0) ++source_generation_;
+            active_source_generation_ = source_generation_;
+            if (source_buffering_signal_) {
+                source_buffering_signal_->activate(
+                    active_source_generation_);
+            }
+            reader_callback_ = SourceReaderCallback::create(
+                source_buffering_signal_, active_source_generation_);
+            if (!reader_callback_) {
+                last_hresult_ = E_OUTOFMEMORY;
+                last_failure_fatal_ = true;
+                close();
+                return false;
+            }
+        }
+
         IMFAttributes* attributes{};
-        auto hr = MFCreateAttributes(&attributes, 6);
+        auto hr = MFCreateAttributes(&attributes, 7);
         if (SUCCEEDED(hr)) {
             hr = attributes->SetUnknown(
                 MF_SOURCE_READER_D3D_MANAGER, device_manager_);
@@ -372,6 +652,10 @@ public:
         if (SUCCEEDED(hr)) {
             hr = attributes->SetUINT32(
                 MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, TRUE);
+        }
+        if (SUCCEEDED(hr) && reader_callback_) {
+            hr = attributes->SetUnknown(
+                MF_SOURCE_READER_ASYNC_CALLBACK, reader_callback_);
         }
         const auto url = source_url(source);
         if (SUCCEEDED(hr)) {
@@ -426,7 +710,14 @@ public:
     }
 
     void close() {
+        cancel_pending_read();
         release(reader_);
+        if (source_buffering_signal_ && active_source_generation_ != 0) {
+            source_buffering_signal_->deactivate(
+                active_source_generation_);
+        }
+        active_source_generation_ = 0;
+        release(reader_callback_);
         source_.clear();
         width_ = 0;
         height_ = 0;
@@ -454,6 +745,13 @@ public:
 
     [[nodiscard]] std::uint64_t format_change_count() const noexcept {
         return format_change_count_;
+    }
+
+    [[nodiscard]] MfD3D11VideoSourceBufferingState
+    source_buffering_state() const noexcept {
+        return source_buffering_signal_
+            ? source_buffering_signal_->state()
+            : MfD3D11VideoSourceBufferingState::unknown;
     }
 
     [[nodiscard]] DecoderReadResult read_next_texture(
@@ -491,6 +789,7 @@ public:
     }
 
 private:
+
     [[nodiscard]] OutputTextureAllocation acquire_output_texture(
             std::uint32_t width,
             std::uint32_t height,
@@ -883,13 +1182,46 @@ private:
         for (;;) {
             DWORD stream_index{};
             DWORD flags{};
-            auto hr = reader_->ReadSample(
-                MF_SOURCE_READER_FIRST_VIDEO_STREAM,
-                0,
-                &stream_index,
-                &flags,
-                &timestamp,
-                &sample);
+            HRESULT hr = S_OK;
+            if (reader_callback_) {
+                reader_callback_->begin_read();
+                hr = reader_->ReadSample(
+                    MF_SOURCE_READER_FIRST_VIDEO_STREAM,
+                    0, nullptr, nullptr, nullptr, nullptr);
+                if (FAILED(hr)) {
+                    reader_callback_->abandon_read();
+                } else {
+                    AsyncSourceReaderCompletion completion;
+                    const auto wait = reader_callback_->wait_for_read(
+                        interrupt_event_, completion);
+                    if (wait
+                            == AsyncSourceReaderWaitResult::interrupted) {
+                        cancel_pending_read();
+                        last_hresult_ = HRESULT_FROM_WIN32(ERROR_CANCELLED);
+                        last_failure_fatal_ = false;
+                        return DecoderReadStatus::cancelled;
+                    }
+                    if (wait == AsyncSourceReaderWaitResult::failed) {
+                        cancel_pending_read();
+                        hr = HRESULT_FROM_WIN32(GetLastError());
+                        if (SUCCEEDED(hr)) hr = E_FAIL;
+                    } else {
+                        hr = completion.status;
+                        stream_index = completion.stream_index;
+                        flags = completion.flags;
+                        timestamp = completion.timestamp;
+                        sample = completion.sample;
+                    }
+                }
+            } else {
+                hr = reader_->ReadSample(
+                    MF_SOURCE_READER_FIRST_VIDEO_STREAM,
+                    0,
+                    &stream_index,
+                    &flags,
+                    &timestamp,
+                    &sample);
+            }
             static_cast<void>(stream_index);
             if (FAILED(hr)) {
                 last_hresult_ = hr;
@@ -927,6 +1259,22 @@ private:
             last_failure_fatal_ = false;
             return DecoderReadStatus::frame;
         }
+    }
+
+    void cancel_pending_read() noexcept {
+        if (!reader_ || !reader_callback_
+                || !reader_callback_->read_pending()) {
+            return;
+        }
+        reader_callback_->begin_flush();
+        const auto hr = reader_->Flush(
+            MF_SOURCE_READER_FIRST_VIDEO_STREAM);
+        if (SUCCEEDED(hr)) {
+            static_cast<void>(reader_callback_->wait_for_flush(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    kAsyncReaderFlushTimeout)));
+        }
+        reader_callback_->abandon_read();
     }
 
     [[nodiscard]] std::shared_ptr<const DecodedD3D11VideoFrame>
@@ -1066,7 +1414,12 @@ private:
     IMFDXGIDeviceManager* device_manager_{};
     UINT device_manager_reset_token_{};
     IMFSourceReader* reader_{};
+    SourceReaderCallback* reader_callback_{};
+    std::shared_ptr<SourceBufferingSignal> source_buffering_signal_;
+    HANDLE interrupt_event_{};
     std::wstring source_;
+    std::uint64_t source_generation_{};
+    std::uint64_t active_source_generation_{};
     std::uint32_t width_{};
     std::uint32_t height_{};
     MfD3D11VideoFormat format_;
@@ -1150,6 +1503,13 @@ struct MfD3D11VideoDecoder::Impl {
     MfD3D11VideoDecoderConfig config;
     CastPipelineDiagnostics* diagnostics{};
     HANDLE retry_wake_event{};
+    HANDLE read_cancel_event{};
+    std::shared_ptr<SourceBufferingSignal> source_buffering_signal;
+    bool read_in_flight{};
+    std::chrono::steady_clock::time_point read_started{};
+    std::wstring read_source;
+    std::uint64_t read_timeline_revision{};
+    std::uint64_t read_seek_epoch{};
 
     bool start(
             void* borrowed_device,
@@ -1170,9 +1530,30 @@ struct MfD3D11VideoDecoder::Impl {
                 == normalized_config.decode_ahead_seconds
             && config.observe_local_source_growth
                 == normalized_config.observe_local_source_growth
+            && config.observe_source_buffering_events
+                == normalized_config.observe_source_buffering_events
             && diagnostics == requested_diagnostics;
+        try {
+            source_buffering_signal =
+                normalized_config.observe_source_buffering_events
+                ? std::make_shared<SourceBufferingSignal>() : nullptr;
+        } catch (...) {
+            return false;
+        }
         retry_wake_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-        if (!retry_wake_event) return false;
+        read_cancel_event =
+            normalized_config.observe_source_buffering_events
+            ? CreateEventW(nullptr, TRUE, FALSE, nullptr) : nullptr;
+        if (!retry_wake_event
+                || (normalized_config.observe_source_buffering_events
+                    && !read_cancel_event)) {
+            if (retry_wake_event) CloseHandle(retry_wake_event);
+            if (read_cancel_event) CloseHandle(read_cancel_event);
+            retry_wake_event = nullptr;
+            read_cancel_event = nullptr;
+            source_buffering_signal.reset();
+            return false;
+        }
         requested_device->AddRef();
         device = requested_device;
         config = normalized_config;
@@ -1180,13 +1561,21 @@ struct MfD3D11VideoDecoder::Impl {
         stop_requested = false;
         startup_complete = false;
         startup_succeeded = false;
+        read_in_flight = false;
+        read_started = {};
+        read_source.clear();
+        read_timeline_revision = 0;
+        read_seek_epoch = 0;
         try {
             worker = std::thread([this] { worker_main(); });
         } catch (...) {
             release(device);
             CloseHandle(retry_wake_event);
+            if (read_cancel_event) CloseHandle(read_cancel_event);
             retry_wake_event = nullptr;
+            read_cancel_event = nullptr;
             diagnostics = nullptr;
+            source_buffering_signal.reset();
             stop_requested = true;
             return false;
         }
@@ -1202,10 +1591,18 @@ struct MfD3D11VideoDecoder::Impl {
         lock.lock();
         release(device);
         CloseHandle(retry_wake_event);
+        if (read_cancel_event) CloseHandle(read_cancel_event);
         retry_wake_event = nullptr;
+        read_cancel_event = nullptr;
         diagnostics = nullptr;
+        source_buffering_signal.reset();
         directive = {};
         decoded = {};
+        read_in_flight = false;
+        read_started = {};
+        read_source.clear();
+        read_timeline_revision = 0;
+        read_seek_epoch = 0;
         stop_requested = false;
         return false;
     }
@@ -1219,7 +1616,9 @@ struct MfD3D11VideoDecoder::Impl {
             directive.serial = next_serial;
             directive.seek_epoch = next_seek_epoch;
             decoded = {};
+            if (source_buffering_signal) source_buffering_signal->clear();
             if (retry_wake_event) SetEvent(retry_wake_event);
+            if (read_cancel_event) SetEvent(read_cancel_event);
         }
         request_ready.notify_one();
     }
@@ -1230,25 +1629,42 @@ struct MfD3D11VideoDecoder::Impl {
             if (!worker.joinable()) {
                 release(device);
                 if (retry_wake_event) CloseHandle(retry_wake_event);
+                if (read_cancel_event) CloseHandle(read_cancel_event);
                 retry_wake_event = nullptr;
+                read_cancel_event = nullptr;
                 diagnostics = nullptr;
+                source_buffering_signal.reset();
                 directive = {};
                 decoded = {};
+                read_in_flight = false;
+                read_started = {};
+                read_source.clear();
+                read_timeline_revision = 0;
+                read_seek_epoch = 0;
                 return;
             }
             stop_requested = true;
             ++directive.serial;
             if (retry_wake_event) SetEvent(retry_wake_event);
+            if (read_cancel_event) SetEvent(read_cancel_event);
         }
         request_ready.notify_one();
         worker.join();
         std::lock_guard lock(mutex);
         release(device);
         if (retry_wake_event) CloseHandle(retry_wake_event);
+        if (read_cancel_event) CloseHandle(read_cancel_event);
         retry_wake_event = nullptr;
+        read_cancel_event = nullptr;
         diagnostics = nullptr;
+        source_buffering_signal.reset();
         directive = {};
         decoded = {};
+        read_in_flight = false;
+        read_started = {};
+        read_source.clear();
+        read_timeline_revision = 0;
+        read_seek_epoch = 0;
         stop_requested = false;
         startup_complete = false;
         startup_succeeded = false;
@@ -1346,6 +1762,12 @@ struct MfD3D11VideoDecoder::Impl {
             if (identity_changed || position_discontinuity) {
                 ++directive.seek_epoch;
             }
+            if (identity_changed && source_buffering_signal) {
+                // decoded is switched to the new identity immediately. Do
+                // not let an old source's final buffering event leak into the
+                // new song while the worker is still cancelling its read.
+                source_buffering_signal->clear();
+            }
             interrupt_retry = identity_changed || position_discontinuity
                 || state_changed;
             directive.source = source;
@@ -1369,6 +1791,10 @@ struct MfD3D11VideoDecoder::Impl {
             }
             if (interrupt_retry && retry_wake_event) {
                 SetEvent(retry_wake_event);
+            }
+            if ((identity_changed || position_discontinuity)
+                    && read_cancel_event) {
+                SetEvent(read_cancel_event);
             }
         }
         request_ready.notify_one();
@@ -1416,15 +1842,35 @@ struct MfD3D11VideoDecoder::Impl {
         }
         status.frame_count = decoded.textures.size();
         status.end_of_stream = decoded.end_of_stream;
+        if (read_in_flight
+                && read_source == source
+                && read_timeline_revision == timeline_revision
+                && read_seek_epoch == decoded.seek_epoch) {
+            status.read_in_flight = true;
+            if (read_started.time_since_epoch().count() != 0) {
+                status.read_wait_seconds = std::max(0.0,
+                    std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - read_started)
+                        .count());
+            }
+        }
         status.availability = decoded.availability;
+        const auto live_source_state = source_buffering_signal
+            ? source_buffering_signal->state()
+            : MfD3D11VideoSourceBufferingState::unknown;
+        status.source_buffering_state = live_source_state
+                != MfD3D11VideoSourceBufferingState::unknown
+            ? live_source_state : decoded.source_buffering_state;
         status.hresult = static_cast<std::int32_t>(decoded.hresult);
         status.source_duration_seconds = decoded.source_duration_seconds;
         status.format_change_count = decoded.format_change_count;
         if (decoded.textures.empty()) return status;
         const auto& first = decoded.textures.front();
+        const auto& last = decoded.textures.back();
         status.buffered_start_seconds = first->timestamp_seconds();
         status.buffered_end_seconds =
             contiguous_buffer_end_seconds(decoded);
+        status.queued_end_seconds = frame_end_seconds(*last);
         status.buffered_duration_seconds = std::max(0.0,
             status.buffered_end_seconds - status.buffered_start_seconds);
         return status;
@@ -1432,7 +1878,11 @@ struct MfD3D11VideoDecoder::Impl {
 
     void worker_main() {
         const auto com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-        DecoderSession session(device, config, diagnostics);
+        DecoderSession session(
+            device, config, source_buffering_signal,
+            config.observe_source_buffering_events
+                ? read_cancel_event : nullptr,
+            diagnostics);
         const bool initialized = session.initialize();
         {
             std::lock_guard lock(mutex);
@@ -1503,6 +1953,8 @@ struct MfD3D11VideoDecoder::Impl {
                 if (!session_ready || !session.seek(work.position_seconds)) {
                     const auto failure = session.last_hresult();
                     const bool fatal = session.last_failure_is_fatal();
+                    const auto source_buffering_state =
+                        session.source_buffering_state();
                     {
                         std::lock_guard lock(mutex);
                         if (directive.source == work.source
@@ -1521,6 +1973,8 @@ struct MfD3D11VideoDecoder::Impl {
                                 ? MfD3D11VideoAvailability::fatal_error
                                 : MfD3D11VideoAvailability::
                                     retryable_starvation;
+                            decoded.source_buffering_state =
+                                source_buffering_state;
                             decoded.hresult = failure;
                         }
                     }
@@ -1535,6 +1989,8 @@ struct MfD3D11VideoDecoder::Impl {
                 session_source = work.source;
                 session_revision = work.timeline_revision;
                 session_seek_epoch = work.seek_epoch;
+                const auto source_buffering_state =
+                    session.source_buffering_state();
                 if (frame_identity_revision != work.timeline_revision
                         || frame_identity_seek_epoch != work.seek_epoch) {
                     next_frame_id = 0;
@@ -1556,6 +2012,8 @@ struct MfD3D11VideoDecoder::Impl {
                     decoded.end_of_stream = false;
                     decoded.availability =
                         MfD3D11VideoAvailability::opening;
+                    decoded.source_buffering_state =
+                        source_buffering_state;
                     decoded.hresult = S_OK;
                     decoded.source_duration_seconds =
                         session.source_duration_seconds();
@@ -1570,7 +2028,8 @@ struct MfD3D11VideoDecoder::Impl {
             while (true) {
                 {
                     std::lock_guard lock(mutex);
-                    if (directive.source != work.source
+                    if (stop_requested
+                            || directive.source != work.source
                             || directive.timeline_revision
                                 != work.timeline_revision
                             || directive.seek_epoch != work.seek_epoch
@@ -1590,14 +2049,60 @@ struct MfD3D11VideoDecoder::Impl {
                         correlation_id,
                         work.timeline_revision);
                 }
+                const auto source_buffering_before =
+                    session.source_buffering_state();
+                {
+                    std::lock_guard lock(mutex);
+                    if (directive.source != work.source
+                            || directive.timeline_revision
+                                != work.timeline_revision
+                            || directive.seek_epoch != work.seek_epoch
+                            || directive.state
+                                == MfD3D11PlaybackState::idle) {
+                        break;
+                    }
+                    if (matches(decoded, work)) {
+                        decoded.source_buffering_state =
+                            source_buffering_before;
+                    }
+                    if (config.observe_source_buffering_events
+                            && read_cancel_event) {
+                        // The identity was rechecked while holding the same
+                        // mutex used by synchronize(), so this reset cannot
+                        // erase a newer source/seek cancellation.
+                        ResetEvent(read_cancel_event);
+                    }
+                    read_in_flight = true;
+                    read_started = std::chrono::steady_clock::now();
+                    read_source = work.source;
+                    read_timeline_revision = work.timeline_revision;
+                    read_seek_epoch = work.seek_epoch;
+                }
                 auto result = session.read_next_texture(
                     correlation_id, work.timeline_revision);
+                const auto source_buffering_after =
+                    session.source_buffering_state();
+                {
+                    std::lock_guard lock(mutex);
+                    if (read_source == work.source
+                            && read_timeline_revision
+                                == work.timeline_revision
+                            && read_seek_epoch == work.seek_epoch) {
+                        read_in_flight = false;
+                        read_started = {};
+                    }
+                }
+                if (result.status == DecoderReadStatus::cancelled) {
+                    break;
+                }
                 if (result.status == DecoderReadStatus::end_of_stream) {
                     std::lock_guard lock(mutex);
                     if (matches(decoded, work)) {
                         decoded.end_of_stream = true;
                         decoded.availability =
                             MfD3D11VideoAvailability::end_of_stream;
+                        decoded.source_buffering_state =
+                            source_buffering_after;
                         decoded.hresult = S_OK;
                         decoded.source_duration_seconds =
                             session.source_duration_seconds();
@@ -1612,6 +2117,8 @@ struct MfD3D11VideoDecoder::Impl {
                         decoded.end_of_stream = false;
                         decoded.availability =
                             MfD3D11VideoAvailability::fatal_error;
+                        decoded.source_buffering_state =
+                            source_buffering_after;
                         decoded.hresult = result.hresult;
                         decoded.source_duration_seconds =
                             session.source_duration_seconds();
@@ -1643,6 +2150,8 @@ struct MfD3D11VideoDecoder::Impl {
                             decoded.availability =
                                 MfD3D11VideoAvailability::
                                     retryable_starvation;
+                            decoded.source_buffering_state =
+                                source_buffering_after;
                             decoded.hresult = result.hresult;
                             decoded.source_duration_seconds =
                                 session.source_duration_seconds();
@@ -1707,6 +2216,7 @@ struct MfD3D11VideoDecoder::Impl {
                 }
                 decoded.availability =
                     MfD3D11VideoAvailability::ready;
+                decoded.source_buffering_state = source_buffering_after;
                 decoded.hresult = S_OK;
                 decoded.source_duration_seconds =
                     session.source_duration_seconds();

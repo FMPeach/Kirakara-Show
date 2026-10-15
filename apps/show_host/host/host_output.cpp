@@ -34,7 +34,10 @@ void publish_current_cast_program(ShowHost& host) {
         host.playback.video_timeline_revision.load(std::memory_order_acquire));
 }
 
-void rollback_cast_start(ShowHost& host) {
+void rollback_cast_start(
+        ShowHost& host,
+        double restore_position,
+        bool restore_playing) {
     static_cast<void>(stop_cast_pipeline(host.cast));
     host.output_transition.cast_video_source_active.store(
         false, std::memory_order_release);
@@ -43,6 +46,19 @@ void rollback_cast_start(ShowHost& host) {
     static_cast<void>(host.playback.audio->set_local_output_enabled(true));
     static_cast<void>(host.output_transition.stage_output_lease.release(
         StageOutputMode::ts_stream));
+    if (host.native_stage.program_clock_active) {
+        discontinuity_native_stage_program_clock(host, restore_position);
+        if (restore_playing) {
+            static_cast<void>(host.playback.audio->pause());
+            host.native_stage.native_video_start_pending = true;
+            host.native_stage.native_video_start_position = restore_position;
+            host.native_stage.native_video_start_started =
+                std::chrono::steady_clock::now();
+            host.playback.video_buffering.store(true);
+            host.playback.video_buffering_position.store(
+                restore_position, std::memory_order_relaxed);
+        }
+    }
     apply_stage_layout(host);
 }
 
@@ -65,12 +81,12 @@ bool handle_start_cast_stream(ShowHost& host, std::uint16_t port) {
     host.cast.program = cast_program_bindings(host);
     publish_current_cast_program(host);
     if (!start_cast_pipeline(host.cast, port)) {
-        rollback_cast_start(host);
+        rollback_cast_start(host, takeover_position, takeover_playing);
         return false;
     }
     if (!host.playback.audio->set_local_output_enabled(false)) {
         log_line("cast stream: failed to close local audio output gate");
-        rollback_cast_start(host);
+        rollback_cast_start(host, takeover_position, takeover_playing);
         return false;
     }
 
@@ -79,7 +95,7 @@ bool handle_start_cast_stream(ShowHost& host, std::uint16_t port) {
         && !host.playback.current_media.video.empty();
     if (!prepare_cast_pipeline(
             host.cast, takeover_position, prime_current_video)) {
-        rollback_cast_start(host);
+        rollback_cast_start(host, takeover_position, takeover_playing);
         return false;
     }
 
@@ -100,6 +116,8 @@ bool handle_start_cast_stream(ShowHost& host, std::uint16_t port) {
         host.playback.current_media.loaded
             && !host.playback.current_media.video.empty(),
         std::memory_order_release);
+    host.output_transition.native_stage_video_source_active.store(
+        false, std::memory_order_release);
     if (takeover_playing && host.playback.audio->is_open()) {
         static_cast<void>(host.playback.audio->pause());
     }
@@ -116,7 +134,12 @@ void handle_stop_cast_stream(ShowHost& host) {
     if (!has_ts_stage_output(host)) return;
 
     const auto restore_state = host.playback.state.load();
-    const bool restore_media_engine =
+    bool restore_native_program_clock =
+        host.native_stage.program_clock_active
+        && host.playback.current_media.loaded
+        && !host.playback.current_media.video.empty()
+        && host.playback.audio->is_open();
+    const bool media_engine_was_detached =
         host.output_transition.cast_media_engine_detached
         && host.playback.current_media.loaded
         && !host.playback.current_media.video.empty();
@@ -132,6 +155,19 @@ void handle_stop_cast_stream(ShowHost& host) {
     host.playback.position.store(restore_position);
     host.playback.video_buffering.store(false);
 
+    if (!restore_native_program_clock) {
+        restore_native_program_clock =
+            activate_native_stage_program_clock(host, restore_position);
+    }
+
+    if (restore_native_program_clock) {
+        discontinuity_native_stage_program_clock(host, restore_position);
+        host.output_transition.native_stage_video_source_active.store(
+            true, std::memory_order_release);
+    }
+
+    const bool restore_media_engine =
+        !restore_native_program_clock && media_engine_was_detached;
     bool media_engine_ready = !restore_media_engine;
     if (restore_media_engine) {
         media_engine_ready = open_media_engine_video(
@@ -148,14 +184,24 @@ void handle_stop_cast_stream(ShowHost& host) {
                 - host.playback.audio_processing.clock_offset_seconds)));
     }
     if (restore_state == SHOW_STATE_PLAYING) {
-        if (media_engine_ready && restore_media_engine) {
+        if (restore_native_program_clock) {
+            host.native_stage.native_video_start_pending = true;
+            host.native_stage.native_video_start_position = restore_position;
+            host.native_stage.native_video_start_started =
+                std::chrono::steady_clock::now();
+            host.playback.video_buffering.store(true);
+            host.playback.video_buffering_position.store(
+                restore_position, std::memory_order_relaxed);
+            static_cast<void>(host.playback.audio->pause());
+        } else if (media_engine_ready && restore_media_engine) {
             host.playback.player.seek(restore_position);
             host.playback.player.play();
         }
-        if (!host.playback.video_master_clock || !restore_media_engine
-                || host.playback.player.has_future_data()) {
+        if (!restore_native_program_clock
+                && (!host.playback.video_master_clock || !restore_media_engine
+                    || host.playback.player.has_future_data())) {
             static_cast<void>(host.playback.audio->play());
-        } else {
+        } else if (!restore_native_program_clock) {
             host.playback.video_buffering.store(true);
             host.playback.video_buffering_position.store(
                 restore_position, std::memory_order_relaxed);

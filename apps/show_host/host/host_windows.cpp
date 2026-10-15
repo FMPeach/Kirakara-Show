@@ -265,6 +265,10 @@ LRESULT CALLBACK stage_proc(
             // output lease changed; in particular, never rebuild a hidden
             // MediaEngine from a stale error event.
             if (has_ts_stage_output(*host)) return 0;
+            // Once the Native Stage clock is authoritative, MediaEngine is a
+            // temporary compatibility object only. Its WAITING/CANPLAY/EOS
+            // events must not override the D3D decoder's actual coverage.
+            if (native_stage_program_clock_is_active(*host)) return 0;
             if (static_cast<std::uint64_t>(lparam) != host->playback.player.generation) {
                 return 0;
             }

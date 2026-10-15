@@ -31,6 +31,15 @@ enum class MfD3D11VideoAvailability : std::uint32_t {
     fatal_error,
 };
 
+// Mirrors Media Foundation's source-level buffering events. Queue depth and a
+// slow decoder are deliberately not folded into this state: only
+// MEBufferingStarted enters buffering and MEBufferingStopped leaves it.
+enum class MfD3D11VideoSourceBufferingState : std::uint32_t {
+    unknown,
+    not_buffering,
+    buffering,
+};
+
 struct MfD3D11VideoDecoderConfig {
     // Existing Stage callers keep BGRA by default. Native NV12 is opt-in so a
     // partially migrated Cast path cannot accidentally feed NV12 to D2D.
@@ -43,6 +52,10 @@ struct MfD3D11VideoDecoderConfig {
     // Cast cache files can grow while Source Reader is waiting. Native Stage
     // keeps its historical bounded retry unless this is explicitly enabled.
     bool observe_local_source_growth{};
+    // Native Stage opts into Source Reader's asynchronous callback only for
+    // HTTP sources so it can observe MEBufferingStarted/Stopped. Other
+    // consumers, including Cast, retain the existing synchronous reader.
+    bool observe_source_buffering_events{};
 };
 
 // Values for the colour fields use the Media Foundation enums verbatim. Zero
@@ -82,10 +95,22 @@ struct MfD3D11VideoBufferStatus {
     double buffered_duration_seconds{};
     double buffered_start_seconds{};
     double buffered_end_seconds{};
+    // End of the newest already-decoded sample, even when the source leaves
+    // a deliberate PTS gap between pictures. Native Stage can hold the
+    // previous picture through that gap; Cast keeps using the stricter
+    // contiguous watermark above.
+    double queued_end_seconds{};
     double source_duration_seconds{};
     bool end_of_stream{};
+    // Diagnostic timing for the current source/revision/seek epoch. Native
+    // Stage does not infer buffering from this: a hardware decoder can take
+    // time here without the media source being starved.
+    bool read_in_flight{};
+    double read_wait_seconds{};
     MfD3D11VideoAvailability availability{
         MfD3D11VideoAvailability::idle};
+    MfD3D11VideoSourceBufferingState source_buffering_state{
+        MfD3D11VideoSourceBufferingState::unknown};
     std::int32_t hresult{};
     std::uint64_t format_change_count{};
 };

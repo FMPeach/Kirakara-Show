@@ -15,6 +15,12 @@
 
 namespace {
 
+double native_stage_monotonic_seconds(
+        std::chrono::steady_clock::time_point value =
+            std::chrono::steady_clock::now()) noexcept {
+    return std::chrono::duration<double>(value.time_since_epoch()).count();
+}
+
 void record_stage_render_timings(
         NativeStagePipelineDiagnostics& diagnostics,
         const kirakara::show::win32::UnifiedStageRenderTimings& timings) {
@@ -554,8 +560,9 @@ bool configure_unified_native_stage(ShowHost& host) {
     auto* device = host.native_stage.unified_stage_renderer.native_d3d_device();
     if (!device) return false;
     if (!host.native_stage.stage_video_decoder_started) {
+        const auto config = native_stage_video_decoder_config();
         host.native_stage.stage_video_decoder_started =
-            host.native_stage.stage_video_decoder.start(device);
+            host.native_stage.stage_video_decoder.start(device, config);
     }
     if (!host.native_stage.stage_video_decoder_started) {
         log_line("Unified native Stage device initialization failed");
@@ -590,6 +597,199 @@ bool has_requested_native_stage_output(ShowHost& host) {
             || has_active_stage_texture_source(host));
 }
 
+bool native_stage_program_clock_is_active(const ShowHost& host) noexcept {
+    return host.native_stage.program_clock_active
+        && !has_ts_stage_output(host);
+}
+
+bool activate_native_stage_program_clock(
+        ShowHost& host, double position_seconds) {
+    if (has_ts_stage_output(host)
+            || !host.playback.current_media.loaded
+            || host.playback.current_media.video.empty()
+            || !host.playback.audio->is_open()
+            || !configure_unified_native_stage(host)) {
+        return false;
+    }
+    // Independent audio supplies both supported program clocks. Once the
+    // Source Reader can own the native picture, keeping MediaEngine open only
+    // decodes the same video a second time.
+    host.playback.player.close();
+    host.output_transition.media_engine_video_source_active.store(
+        false, std::memory_order_release);
+    host.output_transition.native_stage_video_source_active.store(
+        true, std::memory_order_release);
+    host.native_stage.program_clock_active = true;
+    host.native_stage.program_clock.discontinuity(
+        position_seconds, native_stage_monotonic_seconds());
+    return true;
+}
+
+void deactivate_native_stage_program_clock(
+        ShowHost& host, double position_seconds) {
+    host.native_stage.program_clock_active = false;
+    host.output_transition.native_stage_video_source_active.store(
+        false, std::memory_order_release);
+    host.native_stage.program_clock.reset(
+        position_seconds, native_stage_monotonic_seconds());
+}
+
+void discontinuity_native_stage_program_clock(
+        ShowHost& host, double position_seconds) {
+    if (!host.native_stage.program_clock_active) return;
+    host.native_stage.program_clock.discontinuity(
+        position_seconds, native_stage_monotonic_seconds());
+}
+
+void pause_native_stage_program_clock(
+        ShowHost& host, double position_seconds) {
+    if (!host.native_stage.program_clock_active) return;
+    host.native_stage.program_clock.pause_at(
+        position_seconds, native_stage_monotonic_seconds());
+}
+
+void service_native_stage_program(ShowHost& host) {
+    if (has_ts_stage_output(host)) return;
+
+    if (!host.native_stage.program_clock_active) {
+        auto activation_position = host.playback.position.load(
+            std::memory_order_relaxed);
+        if (host.playback.audio->is_open()
+                && host.playback.state.load() == SHOW_STATE_PLAYING) {
+            activation_position = std::max(0.0,
+                host.playback.audio->position()
+                    + host.playback.audio_processing.clock_offset_seconds);
+        }
+        if (!activate_native_stage_program_clock(
+                host, activation_position)) {
+            return;
+        }
+        if (host.playback.state.load() == SHOW_STATE_PLAYING) {
+            static_cast<void>(host.playback.audio->pause());
+            host.native_stage.native_video_start_pending = true;
+            host.native_stage.native_video_start_position = activation_position;
+            host.native_stage.native_video_start_started =
+                std::chrono::steady_clock::now();
+            host.playback.video_buffering_position.store(
+                activation_position, std::memory_order_relaxed);
+            host.playback.video_buffering.store(true);
+        }
+    }
+
+    if (!host.playback.current_media.loaded
+            || host.playback.current_media.video.empty()
+            || !host.playback.audio->is_open()) {
+        deactivate_native_stage_program_clock(
+            host, host.playback.position.load(std::memory_order_relaxed));
+        return;
+    }
+    if (!host.native_stage.stage_video_decoder_started
+            && !configure_unified_native_stage(host)) {
+        return;
+    }
+
+    const auto state = host.playback.state.load();
+    const bool playing = state == SHOW_STATE_PLAYING;
+    const auto generation = host.playback.video_timeline_revision.load(
+        std::memory_order_relaxed);
+    const auto clock_state = host.native_stage.program_clock.state();
+    auto stage_time = host.native_stage.program_clock.position_seconds();
+    if (host.native_stage.native_video_start_pending) {
+        stage_time = host.native_stage.native_video_start_position;
+    }
+    const bool transition_preopen =
+        host.output_transition.native_transition_holding
+        && !host.native_stage.native_video_start_pending
+        && (state == SHOW_STATE_STOPPED || state == SHOW_STATE_IDLE);
+    auto decoder_state = MfD3D11PlaybackState::idle;
+    if (playing
+            || clock_state == NativeStageProgramClockState::priming
+            || clock_state == NativeStageProgramClockState::buffering) {
+        // Buffering is a program-clock pause, not a decoder pause. Keep the
+        // Source Reader filling until it reaches the recovery watermark.
+        decoder_state = MfD3D11PlaybackState::playing;
+    } else if (state == SHOW_STATE_PAUSED || transition_preopen) {
+        decoder_state = MfD3D11PlaybackState::paused;
+    }
+    host.native_stage.stage_video_decoder.synchronize(
+        host.playback.current_media.video,
+        generation,
+        stage_time,
+        decoder_state);
+    const auto decoder_status =
+        host.native_stage.stage_video_decoder.buffer_status(
+            host.playback.current_media.video, generation);
+
+    NativeStageProgramClockInput input;
+    input.monotonic_seconds = native_stage_monotonic_seconds();
+    input.playback_requested = playing;
+    input.has_video = true;
+    input.has_audio_stream = true;
+    input.has_audio_clock = !host.playback.video_master_clock;
+    input.audio_position_seconds = std::max(0.0,
+        host.playback.audio->position()
+            + host.playback.audio_processing.clock_offset_seconds);
+    input.end_on_audio_eof = input.has_audio_clock;
+    input.audio_end_of_stream = host.playback.audio->has_ended();
+    input.audio_duration_seconds = host.playback.audio->duration();
+    input.video_buffer = native_stage_buffer_snapshot(decoder_status);
+
+    const auto previous_clock_state =
+        host.native_stage.program_clock.state();
+    const auto update = host.native_stage.program_clock.update(input);
+    if (update.request_audio_pause) {
+        static_cast<void>(host.playback.audio->pause());
+    }
+    if (update.request_audio_seek) {
+        static_cast<void>(host.playback.audio->seek(std::max(0.0,
+            update.audio_seek_position_seconds
+                - host.playback.audio_processing.clock_offset_seconds)));
+    }
+    if (update.request_audio_play) {
+        static_cast<void>(host.playback.audio->play());
+    }
+
+    const bool waiting_for_video =
+        update.state == NativeStageProgramClockState::priming
+        || update.state == NativeStageProgramClockState::buffering;
+    host.playback.video_buffering.store(waiting_for_video);
+    if (waiting_for_video) {
+        host.playback.video_buffering_position.store(
+            update.position_seconds, std::memory_order_relaxed);
+    }
+    host.playback.position.store(
+        update.position_seconds, std::memory_order_relaxed);
+
+    const auto audio_duration = host.playback.audio->duration();
+    const auto video_duration = decoder_status.source_duration_seconds;
+    if (host.playback.video_master_clock && video_duration > 0.0) {
+        host.playback.duration.store(video_duration);
+    } else if (audio_duration > 0.0) {
+        host.playback.duration.store(audio_duration);
+    } else if (video_duration > 0.0) {
+        host.playback.duration.store(video_duration);
+    }
+
+    if (update.state == NativeStageProgramClockState::ended
+            && state == SHOW_STATE_PLAYING) {
+        handle_media_ended(host);
+        return;
+    }
+    if (update.state == NativeStageProgramClockState::fatal_error
+            && previous_clock_state
+                != NativeStageProgramClockState::fatal_error) {
+        log_hresult("native Stage program clock: decoder fatal error",
+            static_cast<HRESULT>(decoder_status.hresult));
+        host.playback.state.store(SHOW_STATE_STOPPED);
+        host.playback.video_buffering.store(false);
+        static_cast<void>(host.playback.audio->pause());
+        fail_program_transition(host);
+        host.playback.paused_position = 0.0;
+        host.playback.has_paused_position = false;
+        bump_playback_revision(host);
+    }
+}
+
 bool prime_native_stage_video(ShowHost& host, double position) {
     if (!has_requested_native_stage_output(host)
             || !host.playback.current_media.loaded
@@ -597,9 +797,8 @@ bool prime_native_stage_video(ShowHost& host, double position) {
             || !configure_unified_native_stage(host)) {
         return false;
     }
-    // if (!host.playback.player.has_future_data()) return false;
     // Gate on the Stage decoder producing its first frame, not on the
-    // MediaEngine clock.  The clock player (video-master) reaches
+    // legacy MediaEngine clock. The old video-master clock reached
     // HAVE_FUTURE_DATA much later on external HTTP sources; gating on it made
     // handle_play skip the gate, play the clock immediately, and later
     // handle_video_can_play seek audio/video to the drifted clock position
@@ -804,6 +1003,14 @@ void release_native_video_start_gate(ShowHost& host) {
         return;
     }
 
+    if (native_stage_program_clock_is_active(host)) {
+        host.playback.position.store(
+            host.native_stage.program_clock.position_seconds());
+        host.playback.video_buffering.store(false);
+        host.playback.last_audio_sync = std::chrono::steady_clock::now();
+        return;
+    }
+
     host.playback.video_buffering.store(false);
     seek_video_outputs(host, start_position);
     if (host.playback.audio->is_open()) {
@@ -940,6 +1147,8 @@ void render_unified_native_stage(ShowHost& host) {
     const auto state = host.playback.state.load();
     const bool playing = state == SHOW_STATE_PLAYING;
     const bool buffering = host.playback.video_buffering.load();
+    const bool program_clock_active =
+        native_stage_program_clock_is_active(host);
     double stage_time = host.playback.position.load();
     if (host.native_stage.native_video_start_pending) {
         stage_time = host.native_stage.native_video_start_position;
@@ -962,7 +1171,10 @@ void render_unified_native_stage(ShowHost& host) {
         && !host.native_stage.native_video_start_pending
         && (state == SHOW_STATE_STOPPED || state == SHOW_STATE_IDLE);
     auto decoder_state = MfD3D11PlaybackState::idle;
-    if (has_video && host.native_stage.native_video_start_pending) {
+    if (has_video && playing && program_clock_active) {
+        // Priming and buffering freeze the program clock, not the decoder.
+        decoder_state = MfD3D11PlaybackState::playing;
+    } else if (has_video && host.native_stage.native_video_start_pending) {
         decoder_state = MfD3D11PlaybackState::paused;
     } else if (has_video && playing && !buffering) {
         decoder_state = MfD3D11PlaybackState::playing;
@@ -978,6 +1190,25 @@ void render_unified_native_stage(ShowHost& host) {
         stage_time,
         decoder_state);
 
+    const auto decoder_buffer = has_video
+        ? host.native_stage.stage_video_decoder.buffer_status(
+            host.playback.current_media.video, generation)
+        : MfD3D11VideoBufferStatus{};
+    // Audio-master programs may outlive their background video. Keep
+    // sampling the final video texture while composing lyrics and titles at
+    // the advancing program time; retaining the old composed Stage frame
+    // would freeze those overlays too.
+    const bool hold_video_tail_for_audio = program_clock_active
+        && !host.playback.video_master_clock
+        && host.playback.audio->is_open()
+        && decoder_buffer.frame_count > 0
+        && decoder_buffer.availability
+            == MfD3D11VideoAvailability::end_of_stream;
+    const auto video_sample_time = hold_video_tail_for_audio
+            && decoder_buffer.buffered_end_seconds > 0.0
+        ? std::min(stage_time, decoder_buffer.buffered_end_seconds)
+        : stage_time;
+
     std::shared_ptr<const DecodedD3D11VideoFrame> decoded;
     if (decoder_state != MfD3D11PlaybackState::idle) {
         host.native_stage.pipeline_diagnostics.increment(
@@ -987,9 +1218,12 @@ void render_unified_native_stage(ShowHost& host) {
                 host.native_stage.pipeline_diagnostics,
                 NativeStagePipelineEvent::decoder_request);
             decoded = host.native_stage.stage_video_decoder.texture_for(
-                host.playback.current_media.video, generation, stage_time);
+                host.playback.current_media.video,
+                generation,
+                video_sample_time);
         }
-        if (decoded && !video_frame_matches_program_time(
+        if (decoded && !hold_video_tail_for_audio
+                && !video_frame_matches_program_time(
                 decoded->timestamp_seconds(),
                 decoded->duration_seconds(),
                 stage_time)) {

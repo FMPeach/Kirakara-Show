@@ -5,6 +5,7 @@
 #include "native_stage_frame_scheduler.h"
 #include "native_stage_pipeline_diagnostics.h"
 #include "native_stage_preview_load_policy.h"
+#include "native_stage_program_clock.h"
 #include "native_stage_trace.h"
 #include "native_stage_video_decoder_config.h"
 #include "stage_texture_publication_cadence.h"
@@ -89,6 +90,8 @@ struct NativeStageSession {
     std::vector<std::weak_ptr<StageTextureSourceState>> stage_texture_sources;
     MfD3D11VideoDecoder stage_video_decoder;
     bool stage_video_decoder_started{};
+    NativeStageProgramClock program_clock;
+    bool program_clock_active{};
     // Bounded next-program slot. A paused directive asks MF for only the first
     // frame at t=0, then sleeps until atomically promoted. Keep normal active
     // queue capacity because the complete worker moves into the active slot.
@@ -149,6 +152,16 @@ kirakara::show::StageOutputProfile desired_native_stage_profile(ShowHost& host);
 void release_unified_native_stage_frames(ShowHost& host);
 bool configure_unified_native_stage(ShowHost& host);
 bool has_requested_native_stage_output(ShowHost& host);
+bool native_stage_program_clock_is_active(const ShowHost& host) noexcept;
+bool activate_native_stage_program_clock(
+    ShowHost& host, double position_seconds);
+void deactivate_native_stage_program_clock(
+    ShowHost& host, double position_seconds);
+void discontinuity_native_stage_program_clock(
+    ShowHost& host, double position_seconds);
+void pause_native_stage_program_clock(
+    ShowHost& host, double position_seconds);
+void service_native_stage_program(ShowHost& host);
 
 bool prime_native_stage_video(ShowHost& host, double position);
 void request_native_stage_standby_video(

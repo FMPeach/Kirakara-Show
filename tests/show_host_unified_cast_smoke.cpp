@@ -941,7 +941,7 @@ int wmain(int argc, wchar_t** argv) {
 
     show_host_stop_cast_stream(host);
     expect(show_host_get_active_video_decoder_owners(host) == 1,
-        "stop-Cast did not restore exactly one MediaEngine video owner");
+        "stop-Cast did not restore exactly one local video owner");
     ShowHostCastCapabilityReport stopped_capability{};
     stopped_capability.struct_size = sizeof(stopped_capability);
     expect(show_host_get_cast_capability_report(host, &stopped_capability)
@@ -951,8 +951,8 @@ int wmain(int argc, wchar_t** argv) {
     reconnected.stop();
 
     // Exercise the inverse lifecycle as well: take over a song that is already
-    // running through MediaEngine. The owner count must move from one decoder
-    // to one decoder, never through a persistent two-decoder Cast topology.
+    // running through local Native output. The owner count must move from one
+    // source owner to one, never through a persistent two-owner Cast topology.
     const auto local_position = show_host_get_position(host);
     std::this_thread::sleep_for(250ms);
     expect(show_host_get_position(host) >= local_position,
@@ -990,7 +990,7 @@ int wmain(int argc, wchar_t** argv) {
     hot_client.stop();
     show_host_stop_cast_stream(host);
     expect(show_host_get_active_video_decoder_owners(host) == 1,
-        "second stop-Cast did not restore one MediaEngine owner");
+        "second stop-Cast did not restore one local video owner");
 
     show_host_destroy(host);
     std::cout << "Unified ShowHost Cast smoke passed: "

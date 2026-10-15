@@ -156,6 +156,9 @@ struct OutputTransitionRuntime {
     // recreate local playback from current_media at the program-clock time.
     bool cast_media_engine_detached{};
     std::atomic<bool> media_engine_video_source_active{};
+    // Current-program ownership only. The bounded standby decoder is not an
+    // active playback owner until promotion.
+    std::atomic<bool> native_stage_video_source_active{};
     std::atomic<bool> cast_video_source_active{};
     StageOutputLease stage_output_lease;
 

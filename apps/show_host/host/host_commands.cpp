@@ -8,9 +8,12 @@
 
 void render_idle_frame(ShowHost& host) {
     if (!has_ts_stage_output(host)) {
-        host.playback.player.apply_pending_seek();
-        host.playback.player.try_play_if_requested();
-        maintain_video_master_sync(host);
+        service_native_stage_program(host);
+        if (!native_stage_program_clock_is_active(host)) {
+            host.playback.player.apply_pending_seek();
+            host.playback.player.try_play_if_requested();
+            maintain_video_master_sync(host);
+        }
     }
     static_cast<void>(refresh_stage_program_ready(host));
     expire_stalled_program_transition(host);
