@@ -23,7 +23,8 @@ struct NativeStageVideoBufferSnapshot {
     double source_duration_seconds{};
     MfD3D11VideoAvailability availability{
         MfD3D11VideoAvailability::idle};
-    bool read_in_flight{};
+    MfD3D11VideoSourceBufferingState source_buffering_state{
+        MfD3D11VideoSourceBufferingState::unknown};
 };
 
 struct NativeStageProgramClockConfig {
@@ -97,4 +98,3 @@ private:
 
 [[nodiscard]] NativeStageVideoBufferSnapshot native_stage_buffer_snapshot(
     const MfD3D11VideoBufferStatus& status) noexcept;
-

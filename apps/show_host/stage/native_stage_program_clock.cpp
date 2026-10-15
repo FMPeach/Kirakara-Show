@@ -64,6 +64,10 @@ bool video_ready_to_resume(
             == MfD3D11VideoAvailability::fatal_error) {
         return false;
     }
+    if (input.video_buffer.source_buffering_state
+            == MfD3D11VideoSourceBufferingState::buffering) {
+        return false;
+    }
     if (!buffer_contains(input.video_buffer, position_seconds,
             config.timestamp_tolerance_seconds)) {
         return false;
@@ -98,13 +102,13 @@ bool video_is_truly_unavailable(
             == MfD3D11VideoAvailability::end_of_stream) {
         return input.video_buffer.frame_count == 0;
     }
-    return input.video_buffer.read_in_flight
-        || input.video_buffer.availability
-            == MfD3D11VideoAvailability::opening
-        || input.video_buffer.availability
-            == MfD3D11VideoAvailability::ready
-        || input.video_buffer.availability
-            == MfD3D11VideoAvailability::retryable_starvation;
+    // Queue starvation alone is not media buffering. A complete source can
+    // miss a presentation deadline because decode/GPU work is late; freezing
+    // audio there turns a dropped frame into a random pause. Native Stage only
+    // stops after the Media Foundation source itself reports
+    // MEBufferingStarted. Recovery still waits for queue coverage/runway.
+    return input.video_buffer.source_buffering_state
+        == MfD3D11VideoSourceBufferingState::buffering;
 }
 
 }  // namespace
@@ -338,7 +342,6 @@ NativeStageVideoBufferSnapshot native_stage_buffer_snapshot(
         status.buffered_end_seconds, status.queued_end_seconds);
     snapshot.source_duration_seconds = status.source_duration_seconds;
     snapshot.availability = status.availability;
-    snapshot.read_in_flight = status.read_in_flight;
+    snapshot.source_buffering_state = status.source_buffering_state;
     return snapshot;
 }
-

@@ -224,7 +224,9 @@ int wmain(int argc, wchar_t** argv) {
     }
 
     MfD3D11VideoDecoder decoder;
-    expect(decoder.start(renderer.native_d3d_device()),
+    MfD3D11VideoDecoderConfig decoder_config;
+    decoder_config.observe_source_buffering_events = true;
+    expect(decoder.start(renderer.native_d3d_device(), decoder_config),
         "MfD3D11VideoDecoder start failed");
     const auto idle_status = decoder.buffer_status(L"", 0);
     expect(idle_status.availability == MfD3D11VideoAvailability::idle,
@@ -235,9 +237,55 @@ int wmain(int argc, wchar_t** argv) {
     expect(!idle_status.read_in_flight
             && idle_status.read_wait_seconds == 0.0,
         "idle decoder reported an in-flight source read");
+    expect(idle_status.source_buffering_state
+            == MfD3D11VideoSourceBufferingState::unknown,
+        "idle decoder reported a live source-buffering state");
 
     if (argc > 1) {
         const std::wstring source = argv[1];
+        const bool source_is_http = source.starts_with(L"http://")
+            || source.starts_with(L"https://");
+        const bool source_buffering_smoke = argc > 2
+            && std::wcscmp(argv[2], L"--source-buffering-smoke") == 0;
+        if (source_buffering_smoke) {
+            expect(source_is_http,
+                "source-buffering smoke requires an HTTP source");
+            constexpr std::uint64_t smoke_revision = 900;
+            const auto started = std::chrono::steady_clock::now();
+            const auto deadline = started + std::chrono::seconds(20);
+            bool saw_buffering{};
+            bool saw_recovery{};
+            while (std::chrono::steady_clock::now() < deadline) {
+                const auto now = std::chrono::steady_clock::now();
+                const auto position = std::chrono::duration<double>(
+                    now - started).count();
+                decoder.synchronize(
+                    source, smoke_revision, position,
+                    MfD3D11PlaybackState::playing);
+                const auto status = decoder.buffer_status(
+                    source, smoke_revision);
+                if (status.source_buffering_state
+                        == MfD3D11VideoSourceBufferingState::buffering) {
+                    saw_buffering = true;
+                } else if (saw_buffering
+                        && status.source_buffering_state
+                            == MfD3D11VideoSourceBufferingState::
+                                not_buffering) {
+                    saw_recovery = true;
+                    break;
+                }
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(10));
+            }
+            decoder.stop();
+            expect(saw_buffering,
+                "HTTP source did not report MEBufferingStarted");
+            expect(saw_recovery,
+                "HTTP source did not report MEBufferingStopped");
+            if (SUCCEEDED(mf)) MFShutdown();
+            if (SUCCEEDED(com)) CoUninitialize();
+            return 0;
+        }
         const double position = argc > 2
             ? std::wcstod(argv[2], nullptr) : 1.0;
         D3D11CastCapabilityProbeOptions source_probe_options;
@@ -335,6 +383,11 @@ int wmain(int argc, wchar_t** argv) {
             "buffered decoder did not report ready/EOS availability");
         expect(playing_status.frame_count > 0,
             "ready decoder reported an empty frame queue");
+        if (!source_is_http) {
+            expect(playing_status.source_buffering_state
+                    == MfD3D11VideoSourceBufferingState::unknown,
+                "local source unexpectedly enabled the async HTTP path");
+        }
         expect(playing_status.buffered_end_seconds
                 >= playing_status.buffered_start_seconds,
             "decoder reported an inverted buffered range");
@@ -390,45 +443,46 @@ int wmain(int argc, wchar_t** argv) {
 
         decoder.stop();
 
-        // Model the first completed cache publish without polling: the path
-        // does not exist when Source Reader opens it, then a downloader makes
-        // the completed file visible in one operation. Directory change
-        // notification should wake the retry well before the one-second
-        // fallback expires.
-        wchar_t temp_path[MAX_PATH]{};
-        expect(GetTempPathW(MAX_PATH, temp_path) != 0,
-            "GetTempPathW failed for growth recovery test");
-        const auto growing_source = std::wstring(temp_path)
-            + L"kirakara-show-growing-"
-            + std::to_wstring(GetCurrentProcessId()) + L".mp4";
-        static_cast<void>(DeleteFileW(growing_source.c_str()));
-        MfD3D11VideoDecoderConfig growing_config;
-        growing_config.observe_local_source_growth = true;
-        MfD3D11VideoDecoder growing_decoder;
-        expect(growing_decoder.start(
-                renderer.native_d3d_device(), growing_config),
-            "growing decoder start failed");
-        constexpr std::uint64_t growing_revision = 10;
-        growing_decoder.synchronize(
-            growing_source, growing_revision, position,
-            MfD3D11PlaybackState::playing);
-        expect(wait_for_availability(
-                growing_decoder, growing_source, growing_revision,
-                MfD3D11VideoAvailability::retryable_starvation),
-            "not-yet-published cache file was not retryable");
-        expect(CopyFileW(source.c_str(), growing_source.c_str(), FALSE),
-            "failed to publish completed cache file");
-        const auto growth_started = std::chrono::steady_clock::now();
-        auto grown_frame = wait_for_texture(
-            growing_decoder, growing_source, growing_revision, position);
-        const auto growth_elapsed = std::chrono::steady_clock::now()
-            - growth_started;
-        expect(grown_frame != nullptr,
-            "decoder did not recover after cache file publication");
-        expect(growth_elapsed < std::chrono::milliseconds(900),
-            "cache publication waited for the fallback retry timer");
-        growing_decoder.stop();
-        static_cast<void>(DeleteFileW(growing_source.c_str()));
+        if (!source_is_http) {
+            // Model the first completed cache publish without polling: the
+            // path does not exist when Source Reader opens it, then a
+            // downloader makes the completed file visible in one operation.
+            // Directory notification should beat the fallback timer.
+            wchar_t temp_path[MAX_PATH]{};
+            expect(GetTempPathW(MAX_PATH, temp_path) != 0,
+                "GetTempPathW failed for growth recovery test");
+            const auto growing_source = std::wstring(temp_path)
+                + L"kirakara-show-growing-"
+                + std::to_wstring(GetCurrentProcessId()) + L".mp4";
+            static_cast<void>(DeleteFileW(growing_source.c_str()));
+            MfD3D11VideoDecoderConfig growing_config;
+            growing_config.observe_local_source_growth = true;
+            MfD3D11VideoDecoder growing_decoder;
+            expect(growing_decoder.start(
+                    renderer.native_d3d_device(), growing_config),
+                "growing decoder start failed");
+            constexpr std::uint64_t growing_revision = 10;
+            growing_decoder.synchronize(
+                growing_source, growing_revision, position,
+                MfD3D11PlaybackState::playing);
+            expect(wait_for_availability(
+                    growing_decoder, growing_source, growing_revision,
+                    MfD3D11VideoAvailability::retryable_starvation),
+                "not-yet-published cache file was not retryable");
+            expect(CopyFileW(source.c_str(), growing_source.c_str(), FALSE),
+                "failed to publish completed cache file");
+            const auto growth_started = std::chrono::steady_clock::now();
+            auto grown_frame = wait_for_texture(
+                growing_decoder, growing_source, growing_revision, position);
+            const auto growth_elapsed = std::chrono::steady_clock::now()
+                - growth_started;
+            expect(grown_frame != nullptr,
+                "decoder did not recover after cache file publication");
+            expect(growth_elapsed < std::chrono::milliseconds(900),
+                "cache publication waited for the fallback retry timer");
+            growing_decoder.stop();
+            static_cast<void>(DeleteFileW(growing_source.c_str()));
+        }
 
         MfD3D11VideoDecoder nv12_decoder;
         MfD3D11VideoDecoderConfig nv12_config;

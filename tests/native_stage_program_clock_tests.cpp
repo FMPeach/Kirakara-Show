@@ -38,9 +38,14 @@ int main() {
     sparse_status.buffered_end_seconds = 0.083;
     sparse_status.queued_end_seconds = 0.583;
     sparse_status.availability = MfD3D11VideoAvailability::ready;
+    sparse_status.source_buffering_state =
+        MfD3D11VideoSourceBufferingState::not_buffering;
     const auto sparse_snapshot = native_stage_buffer_snapshot(sparse_status);
     expect_near(sparse_snapshot.end_seconds, 0.583,
         "Native Stage did not bridge an already-decoded sparse PTS gap");
+    expect(sparse_snapshot.source_buffering_state
+            == MfD3D11VideoSourceBufferingState::not_buffering,
+        "Native Stage lost the Media Foundation buffering state");
 
     NativeStageProgramClock clock;
     NativeStageProgramClockInput input;
@@ -75,46 +80,95 @@ int main() {
     input.monotonic_seconds = 100.2;
     input.audio_position_seconds = 1.2;
     input.video_buffer = ready_buffer(1.05, 1.12, 2);
-    input.video_buffer.read_in_flight = true;
+    input.video_buffer.source_buffering_state =
+        MfD3D11VideoSourceBufferingState::not_buffering;
+    update = clock.update(input);
+    expect(update.state == NativeStageProgramClockState::playing,
+        "complete media entered buffering because decode was late");
+    expect(!update.request_audio_pause,
+        "complete media paused audio because decode was late");
+    expect_near(update.position_seconds, 1.2,
+        "complete media stopped the audio-master clock");
+
+    input.monotonic_seconds = 100.25;
+    input.audio_position_seconds = 1.25;
+    input.video_buffer.source_buffering_state =
+        MfD3D11VideoSourceBufferingState::unknown;
+    update = clock.update(input);
+    expect(update.state == NativeStageProgramClockState::playing,
+        "an uncovered queue without a source event entered buffering");
+    expect_near(update.position_seconds, 1.25,
+        "the clock stopped without a source buffering event");
+
+    input.monotonic_seconds = 100.275;
+    input.audio_position_seconds = 1.275;
+    input.video_buffer.availability = MfD3D11VideoAvailability::opening;
+    update = clock.update(input);
+    expect(update.state == NativeStageProgramClockState::playing,
+        "ordinary source reopen was misclassified as media buffering");
+
+    input.monotonic_seconds = 100.3;
+    input.audio_position_seconds = 1.3;
+    input.video_buffer.availability = MfD3D11VideoAvailability::ready;
+    update = clock.update(input);
+    expect(update.state == NativeStageProgramClockState::playing,
+        "late decode was misclassified as media buffering");
+    expect(!update.request_audio_pause,
+        "late decode paused the audio clock");
+
+    input.monotonic_seconds = 100.45;
+    input.audio_position_seconds = 1.45;
+    input.video_buffer.source_buffering_state =
+        MfD3D11VideoSourceBufferingState::buffering;
     update = clock.update(input);
     expect(update.state == NativeStageProgramClockState::buffering,
-        "uncovered in-flight read did not enter buffering");
+        "MEBufferingStarted did not enter buffering");
     expect(update.request_audio_pause,
         "buffering did not pause the audio clock");
-    expect_near(update.position_seconds, 1.1,
+    expect_near(update.position_seconds, 1.3,
         "buffering advanced beyond the last covered position");
 
-    // A user pause while transport is already buffering is still a user
+    input.monotonic_seconds = 100.475;
+    input.video_buffer = ready_buffer(1.08, 1.60, 8);
+    input.video_buffer.source_buffering_state =
+        MfD3D11VideoSourceBufferingState::buffering;
+    update = clock.update(input);
+    expect(update.state == NativeStageProgramClockState::buffering,
+        "queue runway resumed before MEBufferingStopped");
+    expect(!update.request_audio_play,
+        "active source buffering restarted audio");
+
+    // A user pause while the source is already buffering is still a user
     // pause. Resume must remain gated by video coverage instead of briefly
     // restarting audio and falling back into buffering again.
     input.playback_requested = false;
-    input.monotonic_seconds = 100.25;
+    input.monotonic_seconds = 100.5;
     update = clock.update(input);
     expect(update.state == NativeStageProgramClockState::paused,
         "user pause during buffering did not enter paused state");
     input.playback_requested = true;
-    input.monotonic_seconds = 100.275;
+    input.monotonic_seconds = 100.525;
     update = clock.update(input);
     expect(update.state == NativeStageProgramClockState::priming,
         "buffered pause resume bypassed video gating");
     expect(!update.request_audio_play,
         "buffered pause resume restarted audio without video coverage");
 
-    input.monotonic_seconds = 100.3;
-    input.audio_position_seconds = 1.2;
+    input.monotonic_seconds = 100.55;
+    input.audio_position_seconds = 1.45;
     input.video_buffer = ready_buffer(1.08, 1.16, 3);
     update = clock.update(input);
     expect(update.state == NativeStageProgramClockState::priming,
         "paused underflow recovered without a stable runway");
 
-    input.monotonic_seconds = 100.4;
-    input.video_buffer = ready_buffer(1.08, 1.24, 6);
+    input.monotonic_seconds = 100.65;
+    input.video_buffer = ready_buffer(1.08, 1.40, 6);
     update = clock.update(input);
     expect(update.state == NativeStageProgramClockState::playing,
         "underflow did not recover after reaching the high watermark");
     expect(update.request_audio_seek && update.request_audio_play,
         "underflow recovery did not restart aligned audio");
-    expect_near(update.audio_seek_position_seconds, 1.1,
+    expect_near(update.audio_seek_position_seconds, 1.3,
         "underflow recovery moved the frozen position");
 
     // A 120 fps source fills the bounded five-frame Native queue before it
@@ -244,4 +298,3 @@ int main() {
     std::cout << "native stage program clock tests passed\n";
     return 0;
 }
-

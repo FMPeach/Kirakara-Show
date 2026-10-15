@@ -560,8 +560,9 @@ bool configure_unified_native_stage(ShowHost& host) {
     auto* device = host.native_stage.unified_stage_renderer.native_d3d_device();
     if (!device) return false;
     if (!host.native_stage.stage_video_decoder_started) {
+        const auto config = native_stage_video_decoder_config();
         host.native_stage.stage_video_decoder_started =
-            host.native_stage.stage_video_decoder.start(device);
+            host.native_stage.stage_video_decoder.start(device, config);
     }
     if (!host.native_stage.stage_video_decoder_started) {
         log_line("Unified native Stage device initialization failed");
