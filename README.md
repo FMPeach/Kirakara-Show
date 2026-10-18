@@ -16,6 +16,7 @@ KTV 应用。
 - **实体双屏** — 可将完整视频与字幕画面直接输出到第二块显示器
 - **无线投屏输出** — 离屏合成 H.264/AAC MPEG-TS，供上层应用连接投屏设备
 - **音频控制** — 支持原唱/伴奏切换、音量和升降 Key，并在变调后维持原播放时长
+- **Opus 独立音轨** — 通过 libopus 支持本地及 HTTP/HTTPS Ogg/Opus 音频；其余媒体流程保持原版
 - **时间驱动渲染** — 画面始终由当前媒体时间求值，不依赖累计帧数，也不会补画过期帧
 
 ## 使用方式
@@ -24,6 +25,8 @@ KTV 应用。
 
 当前完整实现面向 Windows 10/11 x64。开始前请准备 CMake 3.20 或更新版本、Ninja 或
 Visual Studio C++ 工具链，以及 Windows SDK。
+首次配置会下载并校验静态链接的 libopus、libopusfile 和 libogg 源码，不需要 FFmpeg。
+版本、离线准备方法、支持范围和许可证见 [Opus 依赖说明](third_party/opus/README.md)。
 
 Clone 本仓库后运行：
 
