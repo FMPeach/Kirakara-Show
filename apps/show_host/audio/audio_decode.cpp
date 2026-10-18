@@ -1,5 +1,6 @@
 #include "audio_decode.h"
 #include "decoded_buffer.h"
+#include "opus_decode.h"
 
 #include "../host/host_utils.h"
 
@@ -136,7 +137,7 @@ void downmix_to_stereo(DecodedAudioBuffer& buffer) {
     buffer.samples = std::move(stereo);
 }
 
-bool decode_audio_to_float_pcm(const std::wstring& path,
+static bool decode_media_foundation_audio(const std::wstring& path,
                                DecodedAudioBuffer& buffer) {
     buffer = {};
     IMFSourceReader* reader{};
@@ -211,4 +212,17 @@ bool decode_audio_to_float_pcm(const std::wstring& path,
     buffer.samples.resize(
         whole_frames * static_cast<std::size_t>(buffer.channels));
     return whole_frames > 0;
+}
+
+bool decode_audio_to_float_pcm(const std::wstring& path,
+        DecodedAudioBuffer& buffer) {
+    buffer = {};
+    const auto opus = decode_ogg_opus(path, buffer);
+    if (opus == OpusDecodeResult::decoded) return true;
+    if (opus == OpusDecodeResult::failed) return false;
+    if (decode_media_foundation_audio(path, buffer)) return true;
+    // Keep successful MF decoding untouched. Signed/extensionless HTTP Opus
+    // URLs are inspected only when the original path could not decode them.
+    buffer = {};
+    return decode_ogg_opus(path, buffer, true) == OpusDecodeResult::decoded;
 }
