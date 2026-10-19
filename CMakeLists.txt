@@ -155,6 +155,17 @@ if(KIRAKARA_BUILD_TESTS)
 endif()
 
 if(WIN32)
+    if(KIRAKARA_BUILD_TESTS)
+        add_executable(kirakara_show_mf_source_byte_stream_tests
+            tests/mf_source_byte_stream_tests.cpp
+            apps/show_host/media/mf_source_byte_stream.cpp)
+        target_compile_features(kirakara_show_mf_source_byte_stream_tests PRIVATE cxx_std_20)
+        target_compile_definitions(kirakara_show_mf_source_byte_stream_tests PRIVATE NOMINMAX)
+        target_link_libraries(kirakara_show_mf_source_byte_stream_tests PRIVATE
+            mfplat mfreadwrite mfuuid ole32 uuid)
+        add_test(NAME kirakara_show_mf_source_byte_stream_tests
+            COMMAND kirakara_show_mf_source_byte_stream_tests)
+    endif()
     add_library(kirakara_show_win32
         src/win32/d3d11_texture_surface.cpp
         src/win32/offscreen_surface.cpp
@@ -322,7 +333,8 @@ if(WIN32)
             tests/unified_stage_renderer_tests.cpp
             apps/show_host/cast/cast_pipeline_diagnostics.cpp
             apps/show_host/host/host_utils.cpp
-            apps/show_host/media/mf_d3d11_video_decoder.cpp)
+            apps/show_host/media/mf_d3d11_video_decoder.cpp
+            apps/show_host/media/mf_source_byte_stream.cpp)
         target_compile_definitions(kirakara_show_unified_stage_renderer_tests
             PRIVATE UNICODE _UNICODE NOMINMAX)
         target_link_libraries(kirakara_show_unified_stage_renderer_tests
@@ -413,7 +425,8 @@ if(WIN32)
             apps/show_host/cast/cast_video_frame_normalizer.cpp
             apps/show_host/cast/d3d11_cast_capabilities.cpp
             apps/show_host/host/host_utils.cpp
-            apps/show_host/media/mf_d3d11_video_decoder.cpp)
+            apps/show_host/media/mf_d3d11_video_decoder.cpp
+            apps/show_host/media/mf_source_byte_stream.cpp)
         target_compile_features(kirakara_show_mf_d3d11_video_decoder_tests
             PRIVATE cxx_std_20)
         target_compile_definitions(kirakara_show_mf_d3d11_video_decoder_tests
@@ -551,6 +564,7 @@ if(WIN32)
         apps/show_host/cast/native_cast_backend.cpp
         apps/show_host/cast/native_cast_stream.cpp
         apps/show_host/media/mf_d3d11_video_decoder.cpp
+        apps/show_host/media/mf_source_byte_stream.cpp
     )
     target_compile_features(show_host PRIVATE cxx_std_20)
     target_compile_definitions(show_host PRIVATE

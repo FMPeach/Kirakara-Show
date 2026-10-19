@@ -31,13 +31,13 @@ enum class MfD3D11VideoAvailability : std::uint32_t {
     fatal_error,
 };
 
-// Mirrors Media Foundation's source-level buffering events. Queue depth and a
-// slow decoder are deliberately not folded into this state: only
-// MEBufferingStarted enters buffering and MEBufferingStopped leaves it.
+// Source-level buffering combines MF events with observed HTTP byte I/O.
+// Queue depth and a slow decoder are deliberately not folded into this state.
 enum class MfD3D11VideoSourceBufferingState : std::uint32_t {
     unknown,
     not_buffering,
     buffering,
+    waiting_for_bytes,
 };
 
 struct MfD3D11VideoDecoderConfig {
@@ -53,8 +53,8 @@ struct MfD3D11VideoDecoderConfig {
     // keeps its historical bounded retry unless this is explicitly enabled.
     bool observe_local_source_growth{};
     // Native Stage opts into Source Reader's asynchronous callback only for
-    // HTTP sources so it can observe MEBufferingStarted/Stopped. Other
-    // consumers, including Cast, retain the existing synchronous reader.
+    // HTTP sources, observing buffering events and byte reads below decoding.
+    // Other consumers, including Cast, retain the existing synchronous reader.
     bool observe_source_buffering_events{};
 };
 

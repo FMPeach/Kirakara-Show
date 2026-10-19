@@ -1,4 +1,5 @@
 #include "mf_d3d11_video_decoder.h"
+#include "mf_source_byte_stream.h"
 
 #include "../cast/cast_pipeline_diagnostics.h"
 #include "../host/host_utils.h"
@@ -306,6 +307,12 @@ public:
             std::memory_order_release);
     }
 
+    void observe_reads(std::uint64_t generation,
+            std::shared_ptr<MfSourceByteStreamReads> reads) {
+        byte_reads_.store(std::make_shared<const ByteReads>(
+            ByteReads{generation, std::move(reads)}), std::memory_order_release);
+    }
+
     void deactivate(std::uint64_t generation) noexcept {
         auto value = packed_.load(std::memory_order_acquire);
         while (unpack_generation(value) == generation
@@ -334,11 +341,22 @@ public:
         if (unpack_generation(value) == 0) {
             return MfD3D11VideoSourceBufferingState::unknown;
         }
-        return static_cast<MfD3D11VideoSourceBufferingState>(
-            value & kStateMask);
+        const auto state = static_cast<MfD3D11VideoSourceBufferingState>(value & kStateMask);
+        if (state == MfD3D11VideoSourceBufferingState::buffering) return state;
+        const auto reads = byte_reads_.load(std::memory_order_acquire);
+        if (reads && reads->generation == unpack_generation(value)
+                && reads->reads->buffering()) {
+            return MfD3D11VideoSourceBufferingState::waiting_for_bytes;
+        }
+        return state;
     }
 
 private:
+    struct ByteReads {
+        std::uint64_t generation;
+        std::shared_ptr<MfSourceByteStreamReads> reads;
+    };
+    std::atomic<std::shared_ptr<const ByteReads>> byte_reads_;
     static constexpr std::uint64_t kStateBits = 2;
     static constexpr std::uint64_t kStateMask =
         (std::uint64_t{1} << kStateBits) - 1;
@@ -658,7 +676,38 @@ public:
                 MF_SOURCE_READER_ASYNC_CALLBACK, reader_callback_);
         }
         const auto url = source_url(source);
-        if (SUCCEEDED(hr)) {
+        if (SUCCEEDED(hr) && use_async_reader) {
+            IMFSourceResolver* resolver{};
+            IUnknown* object{};
+            MF_OBJECT_TYPE object_type = MF_OBJECT_INVALID;
+            hr = MFCreateSourceResolver(&resolver);
+            if (SUCCEEDED(hr)) {
+                hr = resolver->CreateObjectFromURL(url.c_str(),
+                    MF_RESOLUTION_BYTESTREAM | MF_RESOLUTION_READ,
+                    nullptr, &object_type, &object);
+            }
+            if (SUCCEEDED(hr)) {
+                hr = object->QueryInterface(IID_PPV_ARGS(&byte_stream_));
+            }
+            if (SUCCEEDED(hr)) {
+                byte_reads_ = std::make_shared<MfSourceByteStreamReads>();
+                source_buffering_signal_->observe_reads(
+                    active_source_generation_, byte_reads_);
+                IMFByteStream* observed{};
+                hr = create_observed_source_byte_stream(
+                    byte_stream_, byte_reads_, &observed, url);
+                if (SUCCEEDED(hr)) {
+                    release(byte_stream_);
+                    byte_stream_ = observed;
+                }
+            }
+            if (SUCCEEDED(hr)) {
+                hr = MFCreateSourceReaderFromByteStream(
+                    byte_stream_, attributes, &reader_);
+            }
+            release(object);
+            release(resolver);
+        } else if (SUCCEEDED(hr)) {
             hr = MFCreateSourceReaderFromURL(
                 url.c_str(), attributes, &reader_);
         }
@@ -710,8 +759,12 @@ public:
     }
 
     void close() {
+        // Cancel byte I/O before waiting for SourceReader's Flush barrier.
+        if (byte_stream_) static_cast<void>(byte_stream_->Close());
         cancel_pending_read();
         release(reader_);
+        release(byte_stream_);
+        byte_reads_.reset();
         if (source_buffering_signal_ && active_source_generation_ != 0) {
             source_buffering_signal_->deactivate(
                 active_source_generation_);
@@ -1196,7 +1249,9 @@ private:
                         interrupt_event_, completion);
                     if (wait
                             == AsyncSourceReaderWaitResult::interrupted) {
-                        cancel_pending_read();
+                        // Identity/seek changes interrupt the old request. A
+                        // fresh session also isolates any delayed OnFlush.
+                        close();
                         last_hresult_ = HRESULT_FROM_WIN32(ERROR_CANCELLED);
                         last_failure_fatal_ = false;
                         return DecoderReadStatus::cancelled;
@@ -1241,6 +1296,15 @@ private:
                 ++format_change_count_;
             }
             if (flags & MF_SOURCE_READERF_ENDOFSTREAM) {
+                // A truncated HTTP response is not the end of a short video.
+                // Only reject EOS with evidence from the byte stream itself;
+                // PTS/container-duration differences remain valid video tails.
+                if (byte_reads_ && byte_reads_->premature_eof()) {
+                    last_hresult_ = MF_E_NET_READ;
+                    last_failure_fatal_ = false;
+                    release(sample);
+                    return DecoderReadStatus::retryable_failure;
+                }
                 last_hresult_ = S_OK;
                 last_failure_fatal_ = false;
                 release(sample);
@@ -1414,6 +1478,8 @@ private:
     IMFDXGIDeviceManager* device_manager_{};
     UINT device_manager_reset_token_{};
     IMFSourceReader* reader_{};
+    IMFByteStream* byte_stream_{};
+    std::shared_ptr<MfSourceByteStreamReads> byte_reads_;
     SourceReaderCallback* reader_callback_{};
     std::shared_ptr<SourceBufferingSignal> source_buffering_signal_;
     HANDLE interrupt_event_{};
@@ -1921,7 +1987,8 @@ struct MfD3D11VideoDecoder::Impl {
                 work = directive;
                 handled_serial = directive.serial;
                 prune_before(decoded, work.position_seconds);
-                reopen_session = session_source != work.source
+                reopen_session = session.source().empty()
+                    || session_source != work.source
                     || session_revision != work.timeline_revision;
                 seek_session = reopen_session
                     || session_seek_epoch != work.seek_epoch;

@@ -265,7 +265,9 @@ int wmain(int argc, wchar_t** argv) {
                 const auto status = decoder.buffer_status(
                     source, smoke_revision);
                 if (status.source_buffering_state
-                        == MfD3D11VideoSourceBufferingState::buffering) {
+                        == MfD3D11VideoSourceBufferingState::buffering
+                        || status.source_buffering_state
+                            == MfD3D11VideoSourceBufferingState::waiting_for_bytes) {
                     saw_buffering = true;
                 } else if (saw_buffering
                         && status.source_buffering_state
@@ -279,9 +281,9 @@ int wmain(int argc, wchar_t** argv) {
             }
             decoder.stop();
             expect(saw_buffering,
-                "HTTP source did not report MEBufferingStarted");
+                "HTTP source did not report a source-level byte wait");
             expect(saw_recovery,
-                "HTTP source did not report MEBufferingStopped");
+                "HTTP source did not recover from its source-level byte wait");
             if (SUCCEEDED(mf)) MFShutdown();
             if (SUCCEEDED(com)) CoUninitialize();
             return 0;

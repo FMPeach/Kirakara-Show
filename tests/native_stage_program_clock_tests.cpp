@@ -32,6 +32,37 @@ NativeStageVideoBufferSnapshot ready_buffer(
 }  // namespace
 
 int main() {
+    // HTTP byte waits may target future read-ahead. They only stop playback
+    // once current coverage runs out, never an already-ready start/recovery.
+    {
+        NativeStageProgramClock byte_wait_clock;
+        NativeStageProgramClockInput byte_wait;
+        byte_wait.playback_requested = true;
+        byte_wait.has_video = true;
+        byte_wait.has_audio_clock = true;
+        byte_wait.has_audio_stream = true;
+        byte_wait.end_on_audio_eof = true;
+        byte_wait.video_buffer = ready_buffer(0.0, 0.3, 8);
+        byte_wait.video_buffer.source_buffering_state =
+            MfD3D11VideoSourceBufferingState::waiting_for_bytes;
+        auto action = byte_wait_clock.update(byte_wait);
+        expect(action.state == NativeStageProgramClockState::playing
+                && action.request_audio_play,
+            "future HTTP read-ahead blocked already-ready startup frames");
+        byte_wait.audio_position_seconds = 0.5;
+        byte_wait.monotonic_seconds = 0.5;
+        action = byte_wait_clock.update(byte_wait);
+        expect(action.state == NativeStageProgramClockState::buffering
+                && action.request_audio_pause,
+            "an actual byte wait with exhausted frames did not stop audio");
+        byte_wait.video_buffer = ready_buffer(0.0, 0.3, 8);
+        byte_wait.video_buffer.source_buffering_state =
+            MfD3D11VideoSourceBufferingState::waiting_for_bytes;
+        action = byte_wait_clock.update(byte_wait);
+        expect(action.state == NativeStageProgramClockState::playing
+                && action.request_audio_play,
+            "future HTTP read-ahead blocked recovered frames");
+    }
     MfD3D11VideoBufferStatus sparse_status;
     sparse_status.frame_count = 5;
     sparse_status.buffered_start_seconds = 0.0;

@@ -105,10 +105,12 @@ bool video_is_truly_unavailable(
     // Queue starvation alone is not media buffering. A complete source can
     // miss a presentation deadline because decode/GPU work is late; freezing
     // audio there turns a dropped frame into a random pause. Native Stage only
-    // stops after the Media Foundation source itself reports
-    // MEBufferingStarted. Recovery still waits for queue coverage/runway.
+    // stops after source-level evidence (an MF buffering event or a stalled/
+    // failed HTTP byte read). Recovery still waits for queue coverage/runway.
     return input.video_buffer.source_buffering_state
-        == MfD3D11VideoSourceBufferingState::buffering;
+            == MfD3D11VideoSourceBufferingState::buffering
+        || input.video_buffer.source_buffering_state
+            == MfD3D11VideoSourceBufferingState::waiting_for_bytes;
 }
 
 }  // namespace
