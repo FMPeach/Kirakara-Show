@@ -3,7 +3,7 @@ name: Show DLL 构建测试
 on:
   workflow_dispatch:
   push:
-    branches: [Actions-Test]
+    branches: [main, Actions-Test]
     paths: [config/actions-build.json]
 
 permissions:
