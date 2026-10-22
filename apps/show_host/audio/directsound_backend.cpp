@@ -60,7 +60,7 @@ void DirectSoundPcmAudioBackend::set_active_track(int track)
         ended_.store(
             play_frame >= active_pcm_->frame_count(),
             std::memory_order_relaxed);
-        cv_.notify_all();
+        notify_render_work_locked();
     }
 
 void DirectSoundPcmAudioBackend::close()
@@ -91,8 +91,9 @@ bool DirectSoundPcmAudioBackend::play()
 {
         std::lock_guard lock(mutex_);
         if (!opened_) return false;
+        if (playing_) return true;
         playing_ = true;
-        cv_.notify_all();
+        notify_render_work_locked();
         return true;
     }
 
@@ -106,6 +107,7 @@ bool DirectSoundPcmAudioBackend::pause()
         }
         buffer_playing_ = false;
         processed_pcm_ring_.clear();
+        notify_render_work_locked();
         return true;
     }
 
@@ -116,6 +118,7 @@ bool DirectSoundPcmAudioBackend::stop()
         playing_ = false;
         reset_stream_state(0);
         ended_.store(false, std::memory_order_relaxed);
+        notify_render_work_locked();
         return true;
     }
 
@@ -131,14 +134,17 @@ bool DirectSoundPcmAudioBackend::seek(double seconds)
         ended_.store(
             frame >= active_pcm_->frame_count(),
             std::memory_order_relaxed);
-        cv_.notify_all();
+        notify_render_work_locked();
         return true;
     }
 
 bool DirectSoundPcmAudioBackend::set_volume(int percent)
 {
         std::lock_guard lock(mutex_);
-        volume_percent_ = std::clamp(percent, 0, 100);
+        const auto volume = std::clamp(percent, 0, 100);
+        if (volume == volume_percent_) return true;
+        volume_percent_ = volume;
+        notify_render_work_locked();
         return true;
     }
 
@@ -163,6 +169,7 @@ bool DirectSoundPcmAudioBackend::set_key_semitones(int semitones)
         begin_key_fade_locked(previous_key, key, output_frame);
         reset_stretch_locked();
         align_read_frame_to_next_output_locked();
+        notify_render_work_locked();
         return true;
     }
 
@@ -416,23 +423,33 @@ std::uint64_t DirectSoundPcmAudioBackend::current_play_frame_locked() const
             static_cast<std::uint64_t>(active_pcm_->frame_count()));
     }
 
+void DirectSoundPcmAudioBackend::notify_render_work_locked()
+{
+        ++render_revision_;
+        cv_.notify_one();
+    }
+
 void DirectSoundPcmAudioBackend::render_loop()
 {
         while (true) {
+            std::uint64_t render_revision;
             {
                 std::unique_lock lock(mutex_);
-                cv_.wait_for(lock, std::chrono::milliseconds(8), [this] {
+                // Paused and preloaded players have no periodic work. A play
+                // command or close wakes them without a polling timer.
+                cv_.wait(lock, [this] {
                     return stop_thread_ || playing_;
                 });
                 if (stop_thread_) return;
-                if (!playing_) continue;
+                render_revision = render_revision_;
             }
 
             fill_output_buffer();
 
             {
-                std::lock_guard lock(mutex_);
-                if (!playing_ || stop_thread_) continue;
+                std::unique_lock lock(mutex_);
+                if (stop_thread_) return;
+                if (!playing_) continue;
                 if (!buffer_playing_ && buffer_) {
                     if (SUCCEEDED(buffer_->Play(0, 0, DSBPLAY_LOOPING))) {
                         buffer_playing_ = true;
@@ -440,8 +457,8 @@ void DirectSoundPcmAudioBackend::render_loop()
                 }
                 const auto play_frame = current_play_frame_locked();
                 // Refresh the value position() falls back to when it cannot
-                // take the lock. This runs every worker iteration (~8 ms), so
-                // the fallback is never more than a few ms stale.
+                // take the lock. Normal refill waits are 8 ms; control changes
+                // wake the worker early without blocking the video thread.
                 if (opened_ && active_pcm_->sample_rate > 0) {
                     cached_position_.store(
                         std::min(duration(),
@@ -456,6 +473,17 @@ void DirectSoundPcmAudioBackend::render_loop()
                     buffer_playing_ = false;
                     ended_.store(true, std::memory_order_relaxed);
                 }
+                if (!playing_) continue;
+
+                // The buffer is already filled. Unlike the old predicate
+                // (stop_thread_ || playing_), this actually waits while playing.
+                // Capture the revision BEFORE filling so a command arriving
+                // during DSP work cannot be lost just before this wait.
+                cv_.wait_for(lock, std::chrono::milliseconds(8),
+                    [this, render_revision] {
+                        return stop_thread_ || !playing_
+                            || render_revision_ != render_revision;
+                    });
             }
         }
     }

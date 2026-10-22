@@ -90,6 +90,8 @@ private:
 
     std::uint64_t current_play_frame_locked() const;
 
+    void notify_render_work_locked();
+
     void render_loop();
 
     void fill_output_buffer();
@@ -140,6 +142,7 @@ private:
     // stalled the render loop for 5-27 ms. See position().
     mutable std::atomic<double> cached_position_{0.0};
     std::condition_variable cv_;
+    std::uint64_t render_revision_{}; // Protected by mutex_.
     bool opened_{};
     bool playing_{};
     bool buffer_playing_{};

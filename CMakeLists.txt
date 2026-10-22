@@ -156,6 +156,28 @@ endif()
 
 if(WIN32)
     if(KIRAKARA_BUILD_TESTS)
+        add_executable(kirakara_show_directsound_audio_backend_tests
+            tests/directsound_audio_backend_tests.cpp
+            apps/show_host/audio/directsound_backend.cpp
+            apps/show_host/audio/audio_decode.cpp
+            apps/show_host/host/host_utils.cpp)
+        target_compile_features(kirakara_show_directsound_audio_backend_tests
+            PRIVATE cxx_std_20)
+        target_compile_definitions(kirakara_show_directsound_audio_backend_tests
+            PRIVATE UNICODE _UNICODE NOMINMAX)
+        target_include_directories(kirakara_show_directsound_audio_backend_tests
+            PRIVATE third_party third_party/signalsmith-stretch)
+        target_link_libraries(kirakara_show_directsound_audio_backend_tests
+            PRIVATE mfplat mfreadwrite mfuuid ole32 dsound winmm shlwapi uuid)
+        if(MINGW)
+            target_link_options(kirakara_show_directsound_audio_backend_tests
+                PRIVATE -static -static-libgcc -static-libstdc++)
+        endif()
+        add_test(NAME kirakara_show_directsound_audio_backend_tests
+            COMMAND kirakara_show_directsound_audio_backend_tests)
+        set_tests_properties(kirakara_show_directsound_audio_backend_tests
+            PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 30)
+
         add_executable(kirakara_show_mf_source_byte_stream_tests
             tests/mf_source_byte_stream_tests.cpp
             apps/show_host/media/mf_source_byte_stream.cpp)
