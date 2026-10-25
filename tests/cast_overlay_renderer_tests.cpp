@@ -291,6 +291,37 @@ int main() {
         "title writes non-transparent pixels");
     expect_visible_inside(pixels, 320, 180, overlay.frame().dirty_rect);
 
+    const auto first_title_pixel = first_visible_pixel(pixels);
+    auto next_title = title;
+    next_title.blocks.front().style.y = 440.0F;
+    // Match the one-time refresh_cast_render_configuration() load handoff.
+    title_renderer.invalidate_block_cache();
+    expect(overlay.render(empty_document, next_title, 0.5,
+        engine, style, 4, lyric_renderer, &title_renderer),
+        "next Cast song with repeated credit text");
+    pixels = read_bgra(device, context,
+        static_cast<ID3D11Texture2D*>(overlay.frame().texture));
+    expect(visible_pixels(pixels) > 100,
+        "next Cast title remains visible");
+    expect(first_visible_pixel(pixels) / 320U
+            > first_title_pixel / 320U + 50U,
+        "next Cast song must use its own title Y instead of cached placement");
+    expect(pixels[first_title_pixel * 4U + 3U] == 0,
+        "changing Cast title layout erases the previous song's ink");
+    expect_visible_inside(pixels, 320, 180, overlay.frame().dirty_rect);
+
+    const auto title_version = overlay.frame().content_version;
+    const auto title_draws = diagnostics.snapshot().event(
+        CastPipelineEvent::overlay_draw).count;
+    expect(overlay.render(empty_document, next_title, 1.0,
+        engine, style, 4, lyric_renderer, &title_renderer),
+        "unchanged next-song title");
+    expect(!overlay.frame().changed
+            && overlay.frame().content_version == title_version
+            && diagnostics.snapshot().event(
+                CastPipelineEvent::overlay_draw).count == title_draws,
+        "unchanged title must not redraw or flush caches every frame");
+
     overlay.reset();
     title_renderer.shutdown();
     lyric_renderer.shutdown();

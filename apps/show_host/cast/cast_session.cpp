@@ -767,6 +767,11 @@ void refresh_cast_render_configuration(CastSession& cast) {
                     "cast title renderer unavailable; continuing without title");
             }
         }
+        if (cast.title_renderer_ready) {
+            // A cached block includes its destination. Drop the previous song's
+            // placement once during load, on the Cast worker, for both backends.
+            cast.title_renderer.invalidate_block_cache();
+        }
     });
 }
 
