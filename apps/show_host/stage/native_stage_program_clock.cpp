@@ -125,6 +125,7 @@ void NativeStageProgramClock::reset(
     position_seconds_ = finite_non_negative(position_seconds);
     state_ = NativeStageProgramClockState::idle;
     paused_requires_video_runway_ = false;
+    audio_resync_used_ = false;
     anchor(position_seconds_, monotonic_seconds);
 }
 
@@ -134,6 +135,7 @@ void NativeStageProgramClock::discontinuity(
     position_seconds_ = finite_non_negative(position_seconds);
     state_ = NativeStageProgramClockState::idle;
     paused_requires_video_runway_ = false;
+    audio_resync_used_ = false;
     anchor(position_seconds_, monotonic_seconds);
 }
 
@@ -308,19 +310,20 @@ NativeStageProgramClockUpdate NativeStageProgramClock::update(
     // maintain_video_master_sync() only services the legacy MediaEngine path.
     // Native Stage also needs to follow the separate DASH audio cursor after
     // startup: play() wakes a worker and does not start the device immediately.
-    // Keep video authoritative and allow each seek/play time to settle. Audio
-    // EOF can legitimately precede video EOF, so never restart an ended track.
-    if (has_audio_stream && !input.has_audio_clock
+    // Keep video authoritative and allow one corrective seek after startup
+    // settles. Pauses and buffering do not rearm it; only a new timeline does.
+    // Audio EOF can precede video EOF, so never restart an ended track.
+    if (has_audio_stream && !input.has_audio_clock && !audio_resync_used_
             && !input.audio_end_of_stream
             && std::isfinite(input.audio_position_seconds)
-            && now - last_audio_resync_monotonic_seconds_
-                >= finite_non_negative(config_.audio_resync_interval_seconds)
+            && now - anchor_monotonic_seconds_
+                >= finite_non_negative(config_.audio_resync_delay_seconds)
             && std::abs(position_seconds_ - audio_position)
                 > finite_non_negative(config_.audio_resync_threshold_seconds)) {
         update.request_audio_seek = true;
         update.request_audio_play = true;
         update.audio_seek_position_seconds = position_seconds_;
-        last_audio_resync_monotonic_seconds_ = now;
+        audio_resync_used_ = true;
     }
     return update;
 }
@@ -340,7 +343,6 @@ void NativeStageProgramClock::anchor(
     anchor_position_seconds_ = finite_non_negative(position_seconds);
     anchor_monotonic_seconds_ = std::isfinite(monotonic_seconds)
         ? monotonic_seconds : 0.0;
-    last_audio_resync_monotonic_seconds_ = anchor_monotonic_seconds_;
 }
 
 NativeStageProgramClockUpdate NativeStageProgramClock::result() const noexcept {

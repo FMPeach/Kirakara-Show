@@ -301,8 +301,8 @@ int main() {
         "video-master program ended at the wrong position");
 
     // External DASH audio starts on a different worker/device from the
-    // monotonic video clock. Startup delays and later device stalls must be
-    // corrected during playback, not left until the next pause or byte wait.
+    // monotonic video clock. Allow one extra correction after device startup
+    // settles, without repeatedly seeking throughout the same timeline.
     clock.discontinuity(20.0, 350.0);
     input = {};
     input.monotonic_seconds = 350.0;
@@ -316,11 +316,17 @@ int main() {
     expect(update.request_audio_seek && update.request_audio_play,
         "external startup did not align audio");
 
-    input.monotonic_seconds = 350.1;
+    input.monotonic_seconds = 350.3;
     input.audio_position_seconds = 20.0;
     update = clock.update(input);
     expect(!update.request_audio_seek,
         "ordinary asynchronous audio startup triggered a corrective seek");
+
+    input.monotonic_seconds = 350.55;
+    input.audio_position_seconds = 20.51;
+    update = clock.update(input);
+    expect(!update.request_audio_seek,
+        "minor device cursor jitter consumed the one-shot correction");
 
     input.monotonic_seconds = 350.6;
     input.audio_position_seconds = 20.1;
@@ -340,10 +346,10 @@ int main() {
     input.monotonic_seconds = 351.2;
     input.audio_position_seconds = 21.65;
     update = clock.update(input);
-    expect(update.request_audio_seek && update.request_audio_play,
-        "external audio ahead of video was not corrected");
-    expect_near(update.audio_seek_position_seconds, 21.2,
-        "advanced external audio correction moved the video timeline");
+    expect(!update.request_audio_seek && !update.request_audio_play,
+        "external audio was corrected a second time after reversing drift");
+    expect_near(update.position_seconds, 21.2,
+        "spent audio correction changed the video timeline");
 
     input.monotonic_seconds = 351.8;
     input.audio_position_seconds = 21.76;
@@ -351,16 +357,25 @@ int main() {
     expect(!update.request_audio_seek,
         "minor device cursor jitter caused an audible corrective seek");
 
-    input.monotonic_seconds = 352.4;
-    input.audio_position_seconds = 21.8;
-    input.audio_end_of_stream = true;
+    // The host's explicit pause command must not reopen the spent allowance.
+    clock.pause_at(update.position_seconds, 352.0);
+    input.playback_requested = false;
+    input.monotonic_seconds = 352.0;
     update = clock.update(input);
-    expect(update.state == NativeStageProgramClockState::playing
-            && !update.request_audio_seek && !update.request_audio_play,
-        "short auxiliary audio was restarted after its natural EOF");
+    expect(update.state == NativeStageProgramClockState::paused,
+        "external pause did not enter paused state");
+    input.playback_requested = true;
+    input.monotonic_seconds = 352.5;
+    update = clock.update(input);
+    expect(update.request_audio_seek && update.request_audio_play,
+        "spent correction blocked the required pause-resume alignment");
+    input.monotonic_seconds = 353.2;
+    input.audio_position_seconds = 21.8;
+    update = clock.update(input);
+    expect(!update.request_audio_seek && !update.request_audio_play,
+        "pause-resume reopened the one-shot audio correction");
 
-    input.monotonic_seconds = 353.0;
-    input.audio_end_of_stream = false;
+    input.monotonic_seconds = 353.5;
     input.video_buffer = {};
     input.video_buffer.source_buffering_state =
         MfD3D11VideoSourceBufferingState::waiting_for_bytes;
@@ -369,16 +384,110 @@ int main() {
             && update.request_audio_pause && !update.request_audio_seek,
         "drift correction bypassed external video buffering");
 
-    input.monotonic_seconds = 353.5;
+    input.monotonic_seconds = 354.0;
     input.video_buffer = ready_buffer(22.3, 26.0, 120);
     input.video_buffer.source_duration_seconds = 30.0;
     update = clock.update(input);
     expect(update.request_audio_seek && update.request_audio_play,
         "external buffer recovery did not realign audio");
-    input.monotonic_seconds = 353.6;
+    input.monotonic_seconds = 354.1;
     update = clock.update(input);
     expect(!update.request_audio_seek,
         "external recovery correction did not allow device startup to settle");
+    input.monotonic_seconds = 354.7;
+    update = clock.update(input);
+    expect(!update.request_audio_seek && !update.request_audio_play,
+        "buffer recovery reopened the one-shot audio correction");
+
+    // A seek/replay starts a new timeline and may correct an initial lead as
+    // well as an initial lag. Its own allowance must still be one-shot.
+    clock.discontinuity(20.0, 356.0);
+    input = {};
+    input.monotonic_seconds = 356.0;
+    input.playback_requested = true;
+    input.has_video = true;
+    input.has_audio_stream = true;
+    input.audio_position_seconds = 20.0;
+    input.video_buffer = ready_buffer(19.98, 25.0, 120);
+    input.video_buffer.source_duration_seconds = 30.0;
+    update = clock.update(input);
+    input.monotonic_seconds = 356.6;
+    input.audio_position_seconds = 21.05;
+    update = clock.update(input);
+    expect(update.request_audio_seek && update.request_audio_play,
+        "new timeline did not allow correction of external audio ahead of video");
+    expect_near(update.audio_seek_position_seconds, 20.6,
+        "advanced external audio did not align to the new video timeline");
+    input.monotonic_seconds = 357.2;
+    input.audio_position_seconds = 20.6;
+    update = clock.update(input);
+    expect(!update.request_audio_seek && !update.request_audio_play,
+        "new timeline corrected external audio more than once");
+
+    // Replacing/resetting the program must not inherit a consumed allowance.
+    clock.reset(5.0, 358.0);
+    input.monotonic_seconds = 358.0;
+    input.audio_position_seconds = 5.0;
+    input.video_buffer = ready_buffer(4.98, 10.0, 120);
+    update = clock.update(input);
+    expect(update.request_audio_seek && update.request_audio_play,
+        "reset program did not perform its required initial alignment");
+    input.monotonic_seconds = 358.6;
+    input.audio_position_seconds = 5.1;
+    update = clock.update(input);
+    expect(update.request_audio_seek && update.request_audio_play,
+        "reset program inherited the consumed audio correction allowance");
+    input.monotonic_seconds = 359.2;
+    update = clock.update(input);
+    expect(!update.request_audio_seek && !update.request_audio_play,
+        "reset program corrected external audio more than once");
+
+    // Required pause/buffer-resume alignment does not consume a correction
+    // that has not yet been used by the current timeline.
+    {
+        NativeStageProgramClock pending_clock;
+        NativeStageProgramClockInput pending;
+        pending.playback_requested = true;
+        pending.has_video = true;
+        pending.has_audio_stream = true;
+        pending.audio_position_seconds = 5.0;
+        pending.video_buffer = ready_buffer(4.98, 12.0, 120);
+        pending.video_buffer.source_duration_seconds = 20.0;
+        pending_clock.discontinuity(5.0, 0.0);
+        auto action = pending_clock.update(pending);
+        expect(action.request_audio_seek && action.request_audio_play,
+            "pending correction blocked required startup alignment");
+        pending_clock.pause_at(action.position_seconds, 0.1);
+        pending.playback_requested = false;
+        pending.monotonic_seconds = 0.1;
+        action = pending_clock.update(pending);
+        pending.playback_requested = true;
+        pending.monotonic_seconds = 0.2;
+        action = pending_clock.update(pending);
+        expect(action.request_audio_seek && action.request_audio_play,
+            "pending correction blocked required pause-resume alignment");
+        pending.monotonic_seconds = 0.3;
+        pending.video_buffer = {};
+        pending.video_buffer.source_buffering_state =
+            MfD3D11VideoSourceBufferingState::waiting_for_bytes;
+        action = pending_clock.update(pending);
+        expect(action.state == NativeStageProgramClockState::buffering,
+            "pending correction bypassed video buffering");
+        pending.monotonic_seconds = 0.4;
+        pending.video_buffer = ready_buffer(4.98, 12.0, 120);
+        pending.video_buffer.source_duration_seconds = 20.0;
+        action = pending_clock.update(pending);
+        expect(action.request_audio_seek && action.request_audio_play,
+            "pending correction blocked required buffer-resume alignment");
+        pending.monotonic_seconds = 0.8;
+        action = pending_clock.update(pending);
+        expect(!action.request_audio_seek,
+            "buffer recovery skipped the device settling delay");
+        pending.monotonic_seconds = 1.0;
+        action = pending_clock.update(pending);
+        expect(action.request_audio_seek && action.request_audio_play,
+            "required resume alignments consumed the unused correction");
+    }
 
     // Catalog audio remains authoritative even when it advances at a
     // different pace from wall time.
@@ -396,6 +505,26 @@ int main() {
         "catalog audio was incorrectly corrected against wall time");
     expect_near(update.position_seconds, 20.5,
         "catalog playback lost its authoritative audio clock");
+
+    // Natural auxiliary EOF must not spend an available correction by
+    // restarting an audio track that legitimately ends before the video.
+    clock.discontinuity(5.0, 370.0);
+    input = {};
+    input.monotonic_seconds = 370.0;
+    input.playback_requested = true;
+    input.has_video = true;
+    input.has_audio_stream = true;
+    input.audio_position_seconds = 5.0;
+    input.video_buffer = ready_buffer(4.98, 8.0, 120);
+    input.video_buffer.source_duration_seconds = 10.0;
+    update = clock.update(input);
+    input.monotonic_seconds = 370.8;
+    input.audio_position_seconds = 5.1;
+    input.audio_end_of_stream = true;
+    update = clock.update(input);
+    expect(update.state == NativeStageProgramClockState::playing
+            && !update.request_audio_seek && !update.request_audio_play,
+        "short auxiliary audio was restarted instead of preserving natural EOF");
 
     // A covered user pause resumes directly rather than entering cold-start
     // priming; this protects pause/play and replay behavior exposed to App.
