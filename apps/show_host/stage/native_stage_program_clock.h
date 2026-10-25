@@ -36,6 +36,10 @@ struct NativeStageProgramClockConfig {
     // a full historical five-frame queue is also a valid recovery runway.
     std::size_t minimum_recovery_frames{5};
     double timestamp_tolerance_seconds{1.0 / 240.0};
+    // External media has an independent audio device clock. Correct lasting
+    // drift without repeatedly seeking while its asynchronous worker starts.
+    double audio_resync_threshold_seconds{0.200};
+    double audio_resync_interval_seconds{0.500};
 };
 
 struct NativeStageProgramClockInput {
@@ -94,6 +98,7 @@ private:
     double position_seconds_{};
     double anchor_position_seconds_{};
     double anchor_monotonic_seconds_{};
+    double last_audio_resync_monotonic_seconds_{};
 };
 
 [[nodiscard]] NativeStageVideoBufferSnapshot native_stage_buffer_snapshot(
