@@ -5,6 +5,7 @@ project(KirakaraShow VERSION 0.1.0 LANGUAGES CXX)
 option(KIRAKARA_BUILD_TESTS "Build Kirakara Show tests" ON)
 
 add_library(kirakara_show
+    src/font_request.cpp
     src/json_value.cpp
     src/lrc_parser.cpp
     src/project_parser.cpp
@@ -31,6 +32,9 @@ endif()
 
 if(KIRAKARA_BUILD_TESTS)
     enable_testing()
+    add_executable(kirakara_show_font_request_tests tests/font_request_tests.cpp)
+    target_link_libraries(kirakara_show_font_request_tests PRIVATE Kirakara::Show)
+    add_test(NAME kirakara_show_font_request_tests COMMAND kirakara_show_font_request_tests)
     add_executable(kirakara_show_tests tests/timeline_tests.cpp)
     target_link_libraries(kirakara_show_tests PRIVATE Kirakara::Show)
     add_test(NAME kirakara_show_tests COMMAND kirakara_show_tests)
@@ -189,6 +193,7 @@ if(WIN32)
             COMMAND kirakara_show_mf_source_byte_stream_tests)
     endif()
     add_library(kirakara_show_win32
+        src/win32/font_resolver.cpp
         src/win32/d3d11_texture_surface.cpp
         src/win32/offscreen_surface.cpp
         src/win32/song_title_renderer.cpp
@@ -336,6 +341,11 @@ if(WIN32)
             PRIVATE Kirakara::ShowWin32 d2d1 ole32)
         add_test(NAME kirakara_show_lyric_renderer_tests
             COMMAND kirakara_show_lyric_renderer_tests)
+
+        add_executable(kirakara_show_font_resolver_tests tests/font_resolver_tests.cpp)
+        target_link_libraries(kirakara_show_font_resolver_tests
+            PRIVATE Kirakara::ShowWin32 dwrite ole32 uuid)
+        add_test(NAME kirakara_show_font_resolver_tests COMMAND kirakara_show_font_resolver_tests)
 
         add_executable(kirakara_show_song_title_renderer_tests
             tests/song_title_renderer_tests.cpp)

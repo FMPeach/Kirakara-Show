@@ -16,6 +16,20 @@ Show 接受 `Kirakara Player Demo` 导出的 KRL / JSON 配置。下表列出当
 | `fontBold` | bool | `true` | 主字粗体 |
 | `letterSpacing` | number | `12` | 主字字间距 (px) |
 
+### 字体名称与粗体
+
+`fontFamily` 可以包含 `Noto Sans JP Medium`、`Noto Sans JP Heavy` 这样的字重名称。
+Show 优先匹配完整的字体家族名，匹配失败后再识别末尾的字重词。支持 `Thin`、
+`ExtraLight` / `UltraLight`、`Light`、`Regular`、`Medium`、`DemiBold` / `SemiBold`、
+`ExtraBold` / `UltraBold`、`Black` / `Heavy`，匹配时忽略大小写。
+
+普通家族名沿用原来的粗体规则：关闭时请求 400，开启时请求 700。有真实 Bold 的字体
+优先使用真实 face；只有 Regular 等有限字重时，由 DirectWrite 匹配并按需使用系统粗体模拟。
+名称本身指定 Bold face 时，关闭粗体开关仍保留该 face 的基础字重。
+
+`fontBold`、`rubyBold`、`ruby2Bold` 共用这套规则。缺字时会按备选字体顺序查找，并携带
+当前的目标字重、倾斜和宽窄属性。
+
 ## 颜色 / 描边
 
 | Key | 类型 | 默认值 | 说明 |

@@ -77,6 +77,8 @@ struct CharacterProfile {
 
 struct RenderStyle {
     float font_size{62.0F};
+    // Additional Bold requests on the resolved font face. Keep these booleans
+    // for config/ABI compatibility; numeric weights are resolved internally.
     bool font_bold{true};
     float ruby_size{26.0F};
     bool ruby_bold{true};

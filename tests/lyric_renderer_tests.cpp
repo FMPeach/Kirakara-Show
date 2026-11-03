@@ -9,7 +9,9 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <string>
 #include <string_view>
+#include <vector>
 
 using namespace kirakara::show;
 
@@ -133,6 +135,50 @@ int main() {
             if (pixels[i + 3] > 0) ++visible;
         }
         expect(visible > 500, "visible subtitle glyphs on transparent background");
+
+        // Reuse one renderer while changing named weights and each Bold switch.
+        // Every cached result must agree with a fresh renderer of the same style.
+        // Arial is a Windows fixture; no optional Noto installation is needed.
+        const auto cache_fixture = parse_lrc(
+            "[00:00:00]{MMMM|mmmm>mmmm}[00:10:00]\n", config);
+        expect(cache_fixture.document.lines.size() == 1, "font cache fixture");
+        auto cache_style = style;
+        cache_style.stroke_width = 0;
+        cache_style.ruby_stroke_width = 0;
+        cache_style.ruby2_stroke_width = 0;
+        cache_style.font_bold = cache_style.ruby_bold = cache_style.ruby2_bold = false;
+        auto draw_cached = [&](win32::LyricRenderer& value,
+                const std::wstring& family, const RenderStyle& test_style) {
+            value.set_font_families({family, L"sans-serif"});
+            native_target->SetTransform(D2D1::Matrix3x2F::Identity());
+            native_target->BeginDraw();
+            native_target->Clear(D2D1::ColorF(0, 0, 0, 0));
+            expect(SUCCEEDED(native_target->EndDraw()), "font cache transparent clear");
+            expect(value.render_overlay(cache_fixture.document, 2.5, config, test_style),
+                "font cache frame");
+            return surface.read_rgba8();
+        };
+        const auto regular_pixels = draw_cached(renderer, L"Arial Regular", cache_style);
+        const auto heavy_pixels = draw_cached(renderer, L"Arial Heavy", cache_style);
+        expect(regular_pixels != heavy_pixels, "named Regular and Heavy produce different glyphs");
+        expect(draw_cached(renderer, L"Arial Regular", cache_style) == regular_pixels,
+            "changing back restores Regular without stale Heavy caches");
+        const auto medium_normal = draw_cached(renderer, L"Arial Medium", cache_style);
+        for (int track = 0; track < 3; ++track) {
+            auto bold_style = cache_style;
+            if (track == 0) bold_style.font_bold = true;
+            if (track == 1) bold_style.ruby_bold = true;
+            if (track == 2) bold_style.ruby2_bold = true;
+            const auto reused = draw_cached(renderer, L"Arial Medium", bold_style);
+            expect(reused != medium_normal, "each track's additional Bold affects its glyphs");
+            win32::LyricRenderer fresh;
+            expect(fresh.initialize() && fresh.attach_native_target(native_target),
+                "fresh font cache reference renderer");
+            const auto reference = draw_cached(fresh, L"Arial Medium", bold_style);
+            expect(reused == reference, "main/ruby/ruby2 weight caches agree with fresh renderer");
+            expect(draw_cached(renderer, L"Arial Regular", cache_style) == regular_pixels,
+                "turning Bold back off restores cached normal frame");
+        }
 
         win32::D3D11TextureSurface gpu_surface;
         expect(gpu_surface.resize(320, 180), "D3D11 texture target creation");

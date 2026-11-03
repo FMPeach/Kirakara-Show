@@ -70,6 +70,22 @@ int main() {
         }
         expect(title_visible > 1000, "title produced visible pixels");
 
+        auto weighted_title = config;
+        weighted_title.blocks.back().style.font_bold = false;
+        weighted_title.blocks.back().style.font_families = {L"Arial Regular"};
+        clear(surface);
+        expect(renderer.render(weighted_title, 1.0, 0.666), "Regular named title");
+        const auto regular_title = surface.read_rgba8();
+        weighted_title.blocks.back().style.font_families = {L"Arial Heavy"};
+        clear(surface);
+        expect(renderer.render(weighted_title, 1.0, 0.666), "Heavy named title");
+        const auto heavy_title = surface.read_rgba8();
+        expect(regular_title != heavy_title, "title weight has independent geometry/bitmap identity");
+        weighted_title.blocks.back().style.font_families = {L"Arial Regular"};
+        clear(surface);
+        expect(renderer.render(weighted_title, 1.0, 0.666), "Regular title after Heavy");
+        expect(surface.read_rgba8() == regular_title, "title cache returns to original Regular");
+
         clear(surface);
         expect(renderer.render(config, 0.0, 0.666),
             "title frame at media zero");

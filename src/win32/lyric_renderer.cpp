@@ -1,5 +1,6 @@
 #include "kirakara/show/win32/lyric_renderer.hpp"
 #include "kirakara/show/timeline.hpp"
+#include "font_resolver.hpp"
 
 #include <windows.h>
 #include <d2d1.h>
@@ -422,6 +423,14 @@ struct PreviewRenderer {
     std::unordered_map<std::string, ID2D1Bitmap*> role_bitmap_data_cache;
     std::wstring font_family{L"MotoyaLMaru W3 Mono"};
     std::vector<std::wstring> font_families{font_family};
+    kirakara::show::win32::detail::FontResolver font_resolver;
+    std::array<const kirakara::show::win32::detail::ResolvedFont*, 2> font_states{};
+
+    const kirakara::show::win32::detail::ResolvedFont& font_state(bool bold) {
+        auto*& state = font_states[bold ? 1 : 0];
+        if (!state) state = &font_resolver.resolve(font_families, bold);
+        return *state;
+    }
 
     struct CssLineMetrics {
         float baseline{};
@@ -560,7 +569,7 @@ struct PreviewRenderer {
         if (chars.size() == 1)
             return get_glyph_bmp(chars[0], fs, bold, sw);
 
-        std::string key = "tok|";
+        std::string key = text_cache_key("", fs, bold) + "|tok|";
         for (const auto& ch : chars) { key += std::string(ch); key += '|'; }
         for (const float w : widths) {
             key += std::to_string(static_cast<int>(std::round(w * 100.0F)));
@@ -711,6 +720,8 @@ struct PreviewRenderer {
         release(target);
         release(round_stroke_style);
         release(wic);
+        font_states = {};
+        font_resolver.reset();
         release(dwrite);
         release(d2d);
     }
@@ -720,6 +731,7 @@ struct PreviewRenderer {
                 D2D1_FACTORY_TYPE_SINGLE_THREADED, &d2d))
             && SUCCEEDED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,
                 __uuidof(IDWriteFactory), reinterpret_cast<IUnknown**>(&dwrite)))
+            && font_resolver.initialize(dwrite)
             && SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr,
                 CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)));
         if (result) create_round_stroke_style();
@@ -759,6 +771,7 @@ struct PreviewRenderer {
         if (value.empty() || value == font_family) return;
         font_family = std::move(value);
         font_families = {font_family};
+        font_states = {};
         clear_geometry_cache();
         clear_text_cache();
         clear_glyph_bmp_cache();
@@ -771,6 +784,7 @@ struct PreviewRenderer {
         if (values == font_families) return;
         font_families = std::move(values);
         font_family = font_families.front();
+        font_states = {};
         clear_geometry_cache();
         clear_text_cache();
         clear_glyph_bmp_cache();
@@ -956,66 +970,8 @@ struct PreviewRenderer {
         }
     }
 
-    static std::wstring lower_ascii(std::wstring value) {
-        std::transform(value.begin(), value.end(), value.begin(),
-            [](wchar_t ch) {
-                return ch >= L'A' && ch <= L'Z'
-                    ? static_cast<wchar_t>(ch - L'A' + L'a') : ch;
-            });
-        return value;
-    }
-
-    static void append_unique(std::vector<std::wstring>& target,
-        std::wstring value) {
-        if (value.empty()) return;
-        if (std::find(target.begin(), target.end(), value) == target.end()) {
-            target.push_back(std::move(value));
-        }
-    }
-
-    static std::vector<std::wstring> expanded_font_families(
-        const std::vector<std::wstring>& requested) {
-        std::vector<std::wstring> result;
-        for (const auto& family : requested) {
-            const auto generic = lower_ascii(family);
-            if (generic == L"sans-serif" || generic == L"system-ui") {
-                append_unique(result, L"Microsoft YaHei UI");
-                append_unique(result, L"Yu Gothic UI");
-                append_unique(result, L"Meiryo");
-                append_unique(result, L"Segoe UI");
-            } else if (generic == L"serif") {
-                append_unique(result, L"Yu Mincho");
-                append_unique(result, L"MS Mincho");
-                append_unique(result, L"SimSun");
-                append_unique(result, L"Times New Roman");
-            } else if (generic == L"monospace") {
-                append_unique(result, L"Cascadia Mono");
-                append_unique(result, L"Consolas");
-                append_unique(result, L"MS Gothic");
-                append_unique(result, L"Courier New");
-            } else {
-                append_unique(result, family);
-            }
-        }
-        append_unique(result, L"Microsoft YaHei UI");
-        append_unique(result, L"Yu Gothic UI");
-        append_unique(result, L"Meiryo");
-        append_unique(result, L"Segoe UI");
-        append_unique(result, L"Arial");
-        return result;
-    }
-
     IDWriteTextFormat* format(float size, bool bold) {
-        IDWriteTextFormat* result{};
-        const auto candidates = expanded_font_families(font_families);
-        for (const auto& family : candidates) {
-            if (SUCCEEDED(dwrite->CreateTextFormat(family.c_str(), nullptr,
-                    bold ? DWRITE_FONT_WEIGHT_BOLD : DWRITE_FONT_WEIGHT_NORMAL,
-                    DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                    size, L"zh-CN", &result)) && result) {
-                break;
-            }
-        }
+        auto* result = font_resolver.create_format(font_state(bold), size);
         if (result) {
             result->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
             result->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
@@ -1065,8 +1021,10 @@ struct PreviewRenderer {
         return result;
     }
 
-    static std::string text_cache_key(std::string_view text, float size, bool bold) {
-        auto key = std::string{text};
+    std::string text_cache_key(std::string_view text, float size, bool bold) {
+        auto key = font_state(bold).cache_key;
+        key += '|' + std::to_string(text.size()) + ':';
+        key += text;
         key += '|';
         key += std::to_string(static_cast<int>(std::round(size * 100.0F)));
         key += bold ? "|b" : "|n";

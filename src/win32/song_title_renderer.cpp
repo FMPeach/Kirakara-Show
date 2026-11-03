@@ -1,4 +1,5 @@
 #include "kirakara/show/win32/song_title_renderer.hpp"
+#include "font_resolver.hpp"
 
 #include <windows.h>
 #include <d2d1.h>
@@ -78,62 +79,6 @@ D2D1_COLOR_F color_from_packed(PackedColor value, float opacity = 1.0F) {
         static_cast<float>((value >> 8U) & 0xffU) / 255.0F,
         static_cast<float>((value >> 16U) & 0xffU) / 255.0F,
         opacity);
-}
-
-std::wstring lower_ascii(std::wstring value) {
-    std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) {
-        return ch >= L'A' && ch <= L'Z'
-            ? static_cast<wchar_t>(ch - L'A' + L'a') : ch;
-    });
-    return value;
-}
-
-void append_unique(std::vector<std::wstring>& values, std::wstring value) {
-    if (!value.empty()
-            && std::find(values.begin(), values.end(), value) == values.end()) {
-        values.push_back(std::move(value));
-    }
-}
-
-std::vector<std::wstring> expanded_font_families(
-        const std::vector<std::wstring>& requested) {
-    std::vector<std::wstring> result;
-    for (const auto& family : requested) {
-        const auto generic = lower_ascii(family);
-        if (generic == L"sans-serif") {
-            append_unique(result, L"Microsoft YaHei UI");
-            append_unique(result, L"Yu Gothic UI");
-            append_unique(result, L"Meiryo");
-            append_unique(result, L"Segoe UI");
-        } else if (generic == L"serif") {
-            append_unique(result, L"Yu Mincho");
-            append_unique(result, L"MS Mincho");
-            append_unique(result, L"SimSun");
-        } else if (generic == L"monospace") {
-            append_unique(result, L"Cascadia Mono");
-            append_unique(result, L"Consolas");
-            append_unique(result, L"MS Gothic");
-        } else {
-            append_unique(result, family);
-        }
-    }
-    append_unique(result, L"Microsoft YaHei UI");
-    append_unique(result, L"Yu Gothic UI");
-    append_unique(result, L"Meiryo");
-    append_unique(result, L"Segoe UI");
-    return result;
-}
-
-std::wstring style_key(const SongTitleStyle& style) {
-    std::wstring key;
-    for (const auto& family : style.font_families) {
-        key += family;
-        key.push_back(L'\x1f');
-    }
-    key += std::to_wstring(static_cast<int>(std::lround(
-        style.font_size * 100.0F)));
-    key += style.font_bold ? L"|b" : L"|n";
-    return key;
 }
 
 class GeometryCollector final : public IDWriteTextRenderer {
@@ -251,6 +196,7 @@ struct LineMetrics {
 
 struct SongTitleRenderer::Impl {
     IDWriteFactory* dwrite{};
+    detail::FontResolver font_resolver;
     ID2D1Factory* d2d{};
     ID2D1RenderTarget* target{};
     ID2D1StrokeStyle* round_stroke{};
@@ -329,6 +275,7 @@ struct SongTitleRenderer::Impl {
     void shutdown() {
         discard_target();
         line_metrics_cache.clear();
+        font_resolver.reset();
         release(dwrite);
     }
 
@@ -337,7 +284,7 @@ struct SongTitleRenderer::Impl {
         const auto dwrite_result = DWriteCreateFactory(
             DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
             reinterpret_cast<IUnknown**>(&dwrite));
-        if (FAILED(dwrite_result)) {
+        if (FAILED(dwrite_result) || !font_resolver.initialize(dwrite)) {
             shutdown();
             return false;
         }
@@ -372,17 +319,19 @@ struct SongTitleRenderer::Impl {
         return d2d && round_stroke;
     }
 
+    std::wstring style_key(const SongTitleStyle& style) {
+        const auto& font = font_resolver.resolve(style.font_families, style.font_bold);
+        std::wstring key;
+        key.reserve(font.cache_key.size() + 16);
+        for (const unsigned char ch : font.cache_key) key.push_back(ch);
+        key += L'|' + std::to_wstring(static_cast<int>(std::lround(
+            style.font_size * 100.0F)));
+        return key;
+    }
+
     IDWriteTextFormat* format(const SongTitleStyle& style) {
-        IDWriteTextFormat* result{};
-        for (const auto& family : expanded_font_families(style.font_families)) {
-            if (SUCCEEDED(dwrite->CreateTextFormat(family.c_str(), nullptr,
-                    style.font_bold ? DWRITE_FONT_WEIGHT_BOLD
-                                    : DWRITE_FONT_WEIGHT_NORMAL,
-                    DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                    style.font_size, L"zh-CN", &result)) && result) {
-                break;
-            }
-        }
+        const auto& font = font_resolver.resolve(style.font_families, style.font_bold);
+        auto* result = font_resolver.create_format(font, style.font_size);
         if (result) {
             result->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
             result->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
