@@ -1010,7 +1010,7 @@ struct PreviewRenderer {
             lower ? style.ruby2_size : style.ruby_size);
         const auto letter_spacing = lower
             ? style.ruby2_letter_spacing : style.ruby_letter_spacing;
-        const auto bold = lower ? style.ruby2_bold : false;
+        const auto bold = lower ? style.ruby2_bold : style.ruby_bold;
         float width = 0.0F;
         for (const auto& character : utf8_chars(track.text)) {
             width += measure(character, font_size, bold);
@@ -1731,7 +1731,7 @@ struct PreviewRenderer {
             std::vector<float> widths;
             widths.reserve(characters.size());
             for (const auto& character : characters) {
-                const auto width = measure(character, font_size, false);
+                const auto width = measure(character, font_size, bold);
                 widths.push_back(width);
                 total += width;
             }
@@ -1757,9 +1757,14 @@ struct PreviewRenderer {
 
         const auto draw_chunk = [&](std::string_view text, float start_x,
                                     double chunk_progress) -> float {
-            return lower
+            const auto width = lower
                 ? draw_chunk_token(text, start_x, chunk_progress)
                 : draw_chunk_char(text, start_x, chunk_progress);
+#ifdef KIRAKARA_SHOW_LAYOUT_TESTS
+            if (lower) layout_draws.push_back({LayoutKind::lower_token,
+                std::string{text}, start_x, y, width, font_size, bold, chunk_progress});
+#endif
+            return width;
         };
 
         float cursor = x + (group_width_value - track_width) / 2.0F;
