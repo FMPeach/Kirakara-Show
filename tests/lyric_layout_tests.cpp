@@ -152,7 +152,9 @@ void main_layout_tests(LayoutFixture& fixture) {
                     "main line width uses drawing weight");
                 for (const std::size_t slot : {0U, 1U}) {
                     fixture.line(line, style, slot);
-                    const auto& draws = fixture.renderer.layout_draws;
+                    std::vector<PreviewRenderer::LayoutDraw> draws;
+                    for (const auto& draw : fixture.renderer.layout_draws)
+                        if (draw.kind == PreviewRenderer::LayoutKind::masked) draws.push_back(draw);
                     check(draws.size() == line.chars.size(), "one masked draw per main character");
                     const float start = slot == 0 ? style.line1_x
                         : 1280.0F - style.line2_right - expected;
@@ -344,6 +346,123 @@ void ruby_group_tests(LayoutFixture& fixture) {
     }
 }
 
+void role_label_tests(LayoutFixture& fixture) {
+    struct TextPart { std::string text; float size, spacing, gap; };
+    for (const auto& font : fonts) {
+        if (!fixture.installed(font.installed_family)) continue;
+        fixture.use({font.request, L"sans-serif"});
+        for (const bool bold : {false, true}) for (int flags = 0; flags < 8; ++flags) {
+            RenderStyle style; style.font_bold = bold; style.stroke_width = 0;
+            style.show_role_labels = true; style.letter_spacing = 6.5F;
+            style.role_label_prefix = (flags & 1) ? "[AW" : "";
+            style.role_label_separator = (flags & 2) ? " / M" : "";
+            style.role_label_suffix = (flags & 4) ? "Wm]" : "";
+            CharacterProfile first; first.image_mode = false;
+            first.display_name = "Singer A"; first.label_scale = 75;
+            CharacterProfile last; last.image_mode = false;
+            last.display_name = "Miku39"; last.label_scale = 110;
+            CharacterProfile hidden; hidden.show_label = false;
+            style.character_profiles = {{"a", first}, {"b", last}, {"hidden", hidden}};
+            const std::vector<std::string> roles{"hidden", "a", "unknown", "hidden", "b", "hidden"};
+            const float first_size = std::round(style.font_size * first.label_scale / 100);
+            const float last_size = std::round(style.font_size * last.label_scale / 100);
+            const float first_spacing = style.letter_spacing * first.label_scale / 100;
+            const float last_spacing = style.letter_spacing * last.label_scale / 100;
+            std::vector<TextPart> parts;
+            if (!style.role_label_prefix.empty()) parts.push_back({style.role_label_prefix,
+                first_size, first_spacing, style.letter_spacing + 2});
+            parts.push_back({first.display_name, first_size, first_spacing, style.letter_spacing + 2});
+            if (!style.role_label_separator.empty()) parts.push_back({style.role_label_separator,
+                first_size, first_spacing, style.letter_spacing + 2});
+            parts.push_back({last.display_name, last_size, last_spacing,
+                style.letter_spacing + (style.role_label_suffix.empty() ? 0 : 2)});
+            if (!style.role_label_suffix.empty()) parts.push_back({style.role_label_suffix,
+                last_size, last_spacing, style.letter_spacing});
+            float expected{};
+            for (const auto& part : parts) expected += fixture.text_width(part.text,
+                part.size, bold, part.spacing) + part.gap;
+            expect_near(fixture.renderer.role_label_width(roles, style), expected,
+                "role prefix/name/separator/suffix measured with actual weight");
+            constexpr float start = 90, top = 240;
+            fixture.begin();
+            const auto end = fixture.renderer.draw_role_labels(roles, start, top, style, 1);
+            fixture.end();
+            expect_near(end, start + expected, "role draw cursor agrees with independent reference width");
+            std::vector<PreviewRenderer::LayoutDraw> draws;
+            for (const auto& draw : fixture.renderer.layout_draws)
+                if (draw.kind == PreviewRenderer::LayoutKind::stroked) draws.push_back(draw);
+            std::size_t index{}; float cursor = start;
+            for (const auto& part : parts) {
+                const auto chars = PreviewRenderer::utf8_chars(part.text);
+                for (std::size_t i = 0; i < chars.size(); ++i) {
+                    const auto width = fixture.advance(chars[i], part.size, bold);
+                    if (index < draws.size()) {
+                        check(draws[index].text == chars[i] && draws[index].bold == bold,
+                            "visible role label draw order / font state");
+                        expect_near(draws[index].x, cursor, "role label character cursor");
+                        expect_near(draws[index].width, width, "role label character advance");
+                        expect_near(draws[index].size, part.size, "role label scale preserved");
+                        expect_near(draws[index].y, top + style.font_size - part.size,
+                            "role label vertical placement preserved");
+                    }
+                    ++index; cursor += width;
+                    if (i + 1 < chars.size()) cursor += part.spacing;
+                }
+                cursor += part.gap;
+            }
+            check(index == draws.size(), "hidden and unknown role labels emit no extra glyphs");
+
+            auto line = plain_line("MWm09"); line.chars[0].roles = roles;
+            line.chars[0].role_explicit = true;
+            const auto base = fixture.text_width("MWm09", style.font_size, bold, style.letter_spacing);
+            expect_near(fixture.renderer.line_width(line, style), expected + base,
+                "role text contributes correct right-aligned line width");
+            fixture.line(line, style, 1);
+            const auto main = draws_of(fixture, PreviewRenderer::LayoutKind::masked, style.font_size);
+            check(main.size() == line.chars.size(), "role line main draw count");
+            if (!main.empty()) expect_near(main[0].x, 1280 - style.line2_right - base,
+                "main text remains right aligned after role labels");
+
+            style.character_profiles["b"].display_name.clear();
+            const std::vector<std::string> fallback_role{"b"};
+            style.role_label_prefix.clear(); style.role_label_suffix.clear();
+            const auto fallback_width = fixture.text_width("b", last_size, bold, last_spacing)
+                + style.letter_spacing;
+            expect_near(fixture.renderer.role_label_width(fallback_role, style), fallback_width,
+                "empty display name measures the role identifier");
+        }
+    }
+}
+
+void image_label_tests(LayoutFixture& fixture) {
+    fixture.use({L"Arial"});
+    const auto path = L"layout-test-inline-image";
+    const std::uint32_t pixels[]{0xffffffffU, 0xffffffffU};
+    ID2D1Bitmap* bitmap{};
+    const auto properties = D2D1::BitmapProperties(
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96, 96);
+    require(SUCCEEDED(fixture.renderer.target->CreateBitmap(D2D1::SizeU(2, 1), pixels,
+        sizeof(pixels), properties, &bitmap)), "image label test bitmap");
+    fixture.renderer.role_bitmap_cache.emplace(path, bitmap);
+    for (const bool bold : {false, true}) {
+        RenderStyle style; style.font_bold = bold; style.stroke_width = 0;
+        CharacterProfile image; image.image_mode = true; image.image_path = path;
+        image.label_scale = 75; image.label_margin_left = 3; image.label_margin_right = 7;
+        style.character_profiles = {{"image", image}};
+        const std::vector<std::string> roles{"image"};
+        const auto size = std::round(style.font_size * image.label_scale / 100);
+        const auto expected = 2 * size + image.label_margin_left + image.label_margin_right
+            + style.letter_spacing + 2;
+        expect_near(fixture.renderer.role_label_width(roles, style), expected,
+            "image label width keeps aspect ratio, scale and margins");
+        fixture.begin();
+        const auto end = fixture.renderer.draw_role_labels(roles, 100, 200, style, 1);
+        fixture.end();
+        expect_near(end, 100 + expected, "image label cursor is independent of Bold");
+        check(fixture.renderer.layout_draws.empty(), "valid image label uses the bitmap draw path");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -353,6 +472,8 @@ int main() {
         main_layout_tests(fixture);
         ruby_track_tests(fixture);
         ruby_group_tests(fixture);
+        role_label_tests(fixture);
+        image_label_tests(fixture);
     }
     CoUninitialize();
     std::cout << "Lyric layout metrics: " << checks << " checks, " << failures << " failures.\n";

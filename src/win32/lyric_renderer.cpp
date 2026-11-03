@@ -1155,6 +1155,10 @@ struct PreviewRenderer {
         float size, bool bold, kirakara::show::PackedColor fill,
         kirakara::show::PackedColor stroke,
         float stroke_width, float opacity) {
+#ifdef KIRAKARA_SHOW_LAYOUT_TESTS
+        layout_draws.push_back({LayoutKind::stroked, std::string{text},
+            x, y, width, size, bold, 1});
+#endif
         auto bounds = D2D1::RectF(x, y, x + width, y + size * 1.2F);
         const auto* bmp = get_glyph_bmp(text, size, bold, stroke_width);
         if (!bmp) return bounds;
@@ -1347,7 +1351,7 @@ struct PreviewRenderer {
             float w = 0.0F;
             const auto chars = utf8_chars(text);
             for (std::size_t i = 0; i < chars.size(); ++i) {
-                w += measure(chars[i], size, false);
+                w += measure(chars[i], size, style.font_bold);
                 if (i + 1 < chars.size()) w += spacing;
             }
             return w;
@@ -1380,7 +1384,7 @@ struct PreviewRenderer {
                 is_image = true;
             } else {
                 for (const auto& ch : label_chars)
-                    item_width += measure(ch, v.size, false);
+                    item_width += measure(ch, v.size, style.font_bold);
                 if (label_chars.size() > 1)
                     item_width += static_cast<float>(label_chars.size() - 1)
                         * v.spacing;
@@ -1480,7 +1484,7 @@ struct PreviewRenderer {
             const auto stroke = label_stroke_color(p);
             const auto chars = utf8_chars(text);
             for (std::size_t i = 0; i < chars.size(); ++i) {
-                const auto cw = measure(chars[i], size, false);
+                const auto cw = measure(chars[i], size, style.font_bold);
                 draw_stroked(chars[i], cursor, y + style.font_size - size,
                     cw, size, style.font_bold, fill, stroke,
                     style.stroke_width, opacity);
@@ -1509,7 +1513,7 @@ struct PreviewRenderer {
             const auto fill = label_fill(p);
             const auto stroke = label_stroke_color(p);
             float width = 0.0F;
-            for (const auto& ch : label_chars) width += measure(ch, size, false);
+            for (const auto& ch : label_chars) width += measure(ch, size, style.font_bold);
             if (label_chars.size() > 1) width += static_cast<float>(label_chars.size() - 1) * label_spacing;
             bool image_drawn = false;
             const bool has_image = !p->image_path.empty() || !p->image_data.empty();
@@ -1535,7 +1539,7 @@ struct PreviewRenderer {
             }
             if (!image_drawn) {
                 for (std::size_t i = 0; i < label_chars.size(); ++i) {
-                    const auto cw = measure(label_chars[i], size, false);
+                    const auto cw = measure(label_chars[i], size, style.font_bold);
                     draw_stroked(label_chars[i], cursor,
                         y + style.font_size - size,
                         cw, size, style.font_bold, fill, stroke,
@@ -1567,7 +1571,7 @@ struct PreviewRenderer {
             const auto sstroke = label_stroke_color(p);
             const auto sfx_chars = utf8_chars(sfx);
             for (std::size_t i = 0; i < sfx_chars.size(); ++i) {
-                const auto cw = measure(sfx_chars[i], last.size, false);
+                const auto cw = measure(sfx_chars[i], last.size, style.font_bold);
                 draw_stroked(sfx_chars[i], cursor, y + style.font_size - last.size,
                     cw, last.size, style.font_bold, sfill, sstroke,
                     style.stroke_width, opacity);

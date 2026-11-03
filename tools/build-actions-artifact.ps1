@@ -15,7 +15,9 @@ $commit = (& git -C $root rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Cannot identify Show source commit.' }
 $tests = @('kirakara_show_tests', 'kirakara_show_song_title_tests',
   'kirakara_show_stage_frame_tests', 'kirakara_show_stage_overlay_tests',
-  'kirakara_show_cast_program_clock_tests', 'kirakara_show_native_stage_program_clock_tests')
+  'kirakara_show_cast_program_clock_tests', 'kirakara_show_native_stage_program_clock_tests',
+  'kirakara_show_font_request_tests', 'kirakara_show_font_resolver_tests',
+  'kirakara_show_lyric_layout_tests')
 & cmake -S $root -B $BuildDirectory -G Ninja -DCMAKE_BUILD_TYPE=Release -DKIRAKARA_BUILD_TESTS=ON
 if ($LASTEXITCODE -ne 0) { throw 'Show CMake configure failed.' }
 & cmake --build $BuildDirectory --parallel 2 --target show_host @tests
