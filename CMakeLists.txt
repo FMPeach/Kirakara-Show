@@ -347,6 +347,11 @@ if(WIN32)
             PRIVATE Kirakara::ShowWin32 dwrite ole32 uuid)
         add_test(NAME kirakara_show_font_resolver_tests COMMAND kirakara_show_font_resolver_tests)
 
+        add_executable(kirakara_show_lyric_layout_tests tests/lyric_layout_tests.cpp)
+        target_link_libraries(kirakara_show_lyric_layout_tests
+            PRIVATE Kirakara::ShowWin32 d2d1 dwrite ole32 uuid)
+        add_test(NAME kirakara_show_lyric_layout_tests COMMAND kirakara_show_lyric_layout_tests)
+
         add_executable(kirakara_show_song_title_renderer_tests
             tests/song_title_renderer_tests.cpp)
         target_link_libraries(kirakara_show_song_title_renderer_tests

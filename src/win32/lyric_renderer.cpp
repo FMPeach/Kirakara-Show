@@ -426,6 +426,20 @@ struct PreviewRenderer {
     kirakara::show::win32::detail::FontResolver font_resolver;
     std::array<const kirakara::show::win32::detail::ResolvedFont*, 2> font_states{};
 
+#ifdef KIRAKARA_SHOW_LAYOUT_TESTS
+    // Only the internal layout test translation unit enables this recorder.
+    // Production builds keep the same renderer state and draw path.
+    enum class LayoutKind { masked, stroked, lower_token };
+    struct LayoutDraw {
+        LayoutKind kind;
+        std::string text;
+        float x, y, width, size;
+        bool bold;
+        double progress;
+    };
+    std::vector<LayoutDraw> layout_draws;
+#endif
+
     const kirakara::show::win32::detail::ResolvedFont& font_state(bool bold) {
         auto*& state = font_states[bold ? 1 : 0];
         if (!state) state = &font_resolver.resolve(font_families, bold);
@@ -1191,6 +1205,10 @@ struct PreviewRenderer {
         float opacity, std::span<const std::string> roles,
         float stroke_scale = 1.0F, float role_box_top = std::numeric_limits<float>::quiet_NaN(),
         float role_box_height = 0.0F) {
+#ifdef KIRAKARA_SHOW_LAYOUT_TESTS
+        layout_draws.push_back({LayoutKind::masked, std::string{text},
+            x, y, width, size, bold, progress});
+#endif
         if (roles.size() < 2 || !style.role_colors) {
             const auto paint = roles.empty() ? global_paint(style)
                 : role_paint(roles.front(), style);
@@ -1248,7 +1266,8 @@ struct PreviewRenderer {
         std::size_t count, const DemoStyle& style) {
         float base = 0.0F;
         for (std::size_t i = 0; i < count; ++i) {
-            base += measure(line.chars[first + i].text, style.font_size, false);
+            base += measure(line.chars[first + i].text, style.font_size,
+                style.font_bold);
             if (i + 1 < count) base += style.letter_spacing;
         }
         return base;
@@ -1850,7 +1869,7 @@ struct PreviewRenderer {
                 float value = 0.0F;
                 for (std::size_t j = 0; j < span; ++j) {
                     value += measure(line.chars[i + j].text, style.font_size,
-                        false);
+                        style.font_bold);
                     if (j + 1 < span) value += style.letter_spacing;
                 }
                 return value;
@@ -1859,7 +1878,7 @@ struct PreviewRenderer {
             for (std::size_t j = 0; j < span; ++j) {
                 const auto& character = line.chars[i + j];
                 const auto char_width = measure(character.text, style.font_size,
-                    false);
+                    style.font_bold);
                 const auto progress = i + j < state.chars.size()
                     ? state.chars[i + j].progress : 0.0;
                 draw_role_masked(character.text, char_cursor, y, char_width,
