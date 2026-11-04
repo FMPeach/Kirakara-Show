@@ -1,4 +1,5 @@
 #include "../src/win32/font_resolver.hpp"
+#include "../src/win32/synthetic_bold.hpp"
 
 #include <windows.h>
 #include <d2d1.h>
@@ -45,6 +46,7 @@ int weight_of(IDWriteFontFace* face) {
 
 struct Run {
     float baseline_x{}, baseline_y{};
+    float synthetic_stroke{};
     int base_weight{};
     DWRITE_FONT_SIMULATIONS base_simulations{}, outline_simulations{};
     std::vector<UINT16> indices;
@@ -56,8 +58,9 @@ struct Result { float width{}, area{}; std::vector<Run> runs; };
 
 class Collector final : public IDWriteTextRenderer {
 public:
-    Collector(FontResolver& fonts, const ResolvedFont& font, ID2D1Factory* d2d)
-        : fonts_(fonts), font_(font), d2d_(d2d) {}
+    Collector(FontResolver& fonts, const ResolvedFont& font, ID2D1Factory* d2d,
+        bool small_text = false)
+        : fonts_(fonts), font_(font), d2d_(d2d), small_text_(small_text) {}
     Result result;
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** value) override {
         if (!value) return E_POINTER;
@@ -107,7 +110,9 @@ public:
         ID2D1PathGeometry* geometry{}; ID2D1GeometrySink* sink{};
         succeeded(d2d_->CreatePathGeometry(&geometry), "outline geometry");
         succeeded(geometry->Open(&sink), "outline sink");
-        succeeded(fonts_.glyph_run_outline(font_, *run, sink), "outline with base layout positions");
+        if (small_text_) succeeded(fonts_.glyph_run_ink_outline(font_, *run,
+            sink, saved.synthetic_stroke), "small-text outline with base layout positions");
+        else succeeded(fonts_.glyph_run_outline(font_, *run, sink), "outline with base layout positions");
         succeeded(sink->Close(), "close outline sink");
         float area{};
         succeeded(geometry->ComputeArea(nullptr, 0.001F, &area), "outline area");
@@ -130,11 +135,13 @@ private:
     FontResolver& fonts_;
     const ResolvedFont& font_;
     ID2D1Factory* d2d_{};
+    bool small_text_{};
 };
 
 Result render(IDWriteFactory* dwrite, ID2D1Factory* d2d, FontResolver& fonts,
-    const ResolvedFont& font, const std::wstring& text) {
-    auto* format = fonts.create_format(font, 22);
+    const ResolvedFont& font, const std::wstring& text,
+    float size = 22.0F, bool small_text = false) {
+    auto* format = fonts.create_format(font, size);
     expect(format && static_cast<int>(format->GetFontWeight()) == font.layout_weight,
         "format carries only the layout weight");
     IDWriteTextLayout* layout{};
@@ -144,7 +151,7 @@ Result render(IDWriteFactory* dwrite, ID2D1Factory* d2d, FontResolver& fonts,
     for (const auto tag : {DWRITE_FONT_FEATURE_TAG_KERNING, DWRITE_FONT_FEATURE_TAG_STANDARD_LIGATURES,
         DWRITE_FONT_FEATURE_TAG_CONTEXTUAL_LIGATURES}) succeeded(typography->AddFontFeature({tag, 0}), "disable text feature");
     succeeded(layout->SetTypography(typography, {0, static_cast<UINT32>(text.size())}), "layout typography");
-    Collector collector(fonts, font, d2d);
+    Collector collector(fonts, font, d2d, small_text);
     DWRITE_TEXT_METRICS metrics{}; succeeded(layout->GetMetrics(&metrics), "base layout metrics");
     collector.result.width = metrics.widthIncludingTrailingWhitespace;
     succeeded(layout->Draw(nullptr, &collector, 11.25F, 7.5F), "collect drawing face and geometry");
@@ -164,6 +171,60 @@ void same_layout(const Result& normal, const Result& bold) {
             a.offsets[j].advanceOffset == b.offsets[j].advanceOffset
                 && a.offsets[j].ascenderOffset == b.offsets[j].ascenderOffset,
             "base glyph offsets match");
+    }
+}
+
+void small_text_formula_test() {
+    for (const auto [size, stroke] : std::vector<std::pair<float, float>>{
+            {9, 0.375F}, {20, 485.0F / 648}, {22, 1045.0F / 1296},
+            {26, 1183.0F / 1296}, {28, 623.0F / 648}, {36, 1.125F}})
+        close_to(skia_fake_bold_stroke(size), stroke, "Skia size-dependent stroke formula");
+    for (const auto [size, factor] : std::vector<std::pair<float, float>>{
+            {20, 1}, {28, 1}, {29, 0.5F}, {30, 0}, {40, 0}})
+        close_to(small_text_skia_factor(size), factor, "28/30px transition anchors");
+    float previous_factor = 1, previous_stroke = small_text_skia_stroke(28);
+    for (int i = 1; i <= 2000; ++i) {
+        const auto size = 28 + i / 1000.0F;
+        const auto factor = small_text_skia_factor(size);
+        const auto stroke = small_text_skia_stroke(size);
+        expect(factor <= previous_factor && stroke <= previous_stroke,
+            "28..30px transition decreases monotonically");
+        expect(previous_factor - factor < 0.00051F
+            && previous_stroke - stroke < 0.00051F, "transition is continuous");
+        previous_factor = factor; previous_stroke = stroke;
+    }
+    close_to(small_text_skia_factor(27.999F), small_text_skia_factor(28), "factor at 28px");
+    expect(small_text_skia_factor(29.999F) < 0.00051F, "factor approaches zero at 30px");
+}
+
+void small_text_layout_test(IDWriteFactory* dwrite, ID2D1Factory* d2d,
+    FontResolver& fonts, const wchar_t* family) {
+    for (const float size : {22.0F, 26.0F, 28.0F, 29.0F, 30.0F, 40.0F, 62.0F}) {
+        for (const auto* text : {L"m", L"i", L"1", L".", L"mawa", L"ryoku", L"MWm09",
+                L"\u306a\u307f\u3060"}) {
+            const auto& plain = fonts.resolve({family}, false);
+            const auto normal = render(dwrite, d2d, fonts, plain, text, size, true);
+            for (const bool bold : {false, true}) {
+                const auto& font = fonts.resolve({family}, bold);
+                const auto native = render(dwrite, d2d, fonts, font, text, size);
+                const auto small = render(dwrite, d2d, fonts, font, text, size, true);
+                same_layout(native, small);
+                if (font.explicit_face) same_layout(normal, small);
+                bool has_skia{};
+                for (const auto& run : small.runs) {
+                    const bool eligible = font.explicit_face && font.additional_bold
+                        && run.base_weight < 600
+                        && !(run.base_simulations & DWRITE_FONT_SIMULATIONS_BOLD);
+                    close_to(run.synthetic_stroke, eligible ? small_text_skia_stroke(size) : 0,
+                        "small-text selection uses the actual run face and size");
+                    has_skia |= run.synthetic_stroke > 0;
+                }
+                if (has_skia) close_to(small.area, normal.area,
+                    "small text uses the base outline without native Bold on top");
+                else close_to(small.area, native.area,
+                    "30px+, real Bold and unrequested Bold keep native geometry");
+            }
+        }
     }
 }
 
@@ -243,12 +304,30 @@ void fallback_test(IDWriteFactory* dwrite, ID2D1Factory* d2d,
             }
         }
         expect(saw_light && saw_bold, "mixed primary/fallback faces both exercised");
+        for (const float size : {22.0F, 26.0F, 30.0F}) {
+            const auto native = render(dwrite, d2d, fonts, bold, mixed_text, size);
+            const auto small = render(dwrite, d2d, fonts, bold, mixed_text, size, true);
+            same_layout(native, small);
+            bool saw_small{}, saw_real_bold{};
+            for (const auto& run : small.runs) {
+                if (run.base_weight >= 600) {
+                    saw_real_bold = true;
+                    expect(run.synthetic_stroke == 0, "real Bold fallback receives no Skia stroke");
+                } else {
+                    saw_small = true;
+                    close_to(run.synthetic_stroke, small_text_skia_stroke(size),
+                        "small regular primary alone receives the Skia stroke");
+                }
+            }
+            expect(saw_small && saw_real_bold, "small-text test retains mixed fallback runs");
+        }
     }
     release(collection); release(set); release(builder); release(factory3);
 }
 } // namespace
 
 int main() {
+    small_text_formula_test();
     succeeded(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED), "COM");
     IDWriteFactory* dwrite{};
     succeeded(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
@@ -258,6 +337,11 @@ int main() {
     IDWriteFontCollection* system{}; succeeded(dwrite->GetSystemFontCollection(&system), "system fonts");
     {
         FontResolver fonts; expect(fonts.initialize(dwrite), "draw font resolver");
+        for (const auto* family : {L"Arial", L"Arial Regular", L"Arial Bold"})
+            small_text_layout_test(dwrite, d2d, fonts, family);
+        if (installed(system, L"Noto Sans JP"))
+            for (const auto* family : {L"Noto Sans JP Medium", L"Noto Sans JP SemiBold",
+                    L"Noto Sans JP Heavy"}) small_text_layout_test(dwrite, d2d, fonts, family);
         const std::vector<std::wstring> texts{L"m", L"i", L"1", L".", L"mawa", L"ryoku", L"MWm09"};
         for (const auto* family : {L"Arial Regular", L"Arial Bold", L"Noto Sans JP Regular",
             L"Noto Sans JP Medium", L"Noto Sans JP SemiBold", L"Noto Sans JP Heavy",

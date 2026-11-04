@@ -231,10 +231,11 @@ public:
         if (!run || !run->fontFace) return E_INVALIDARG;
         ID2D1PathGeometry* path{};
         ID2D1GeometrySink* sink{};
+        float synthetic_stroke{};
         HRESULT result = factory_->CreatePathGeometry(&path);
         if (SUCCEEDED(result)) result = path->Open(&sink);
         if (SUCCEEDED(result)) {
-            result = fonts_.glyph_run_outline(font_, *run, sink);
+            result = fonts_.glyph_run_ink_outline(font_, *run, sink, synthetic_stroke);
         }
         if (sink) {
             const auto close_result = sink->Close();
@@ -250,6 +251,11 @@ public:
             D2D1_RECT_F glyph_bounds{};
             if (SUCCEEDED(positioned->GetBounds(D2D1::Matrix3x2F::Identity(),
                     &glyph_bounds))) {
+                const auto radius = synthetic_stroke * 0.5F;
+                glyph_bounds.left -= radius;
+                glyph_bounds.top -= radius;
+                glyph_bounds.right += radius;
+                glyph_bounds.bottom += radius;
                 if (!has_bounds_) {
                     bounds_ = glyph_bounds;
                     has_bounds_ = true;
@@ -261,9 +267,14 @@ public:
                 }
             }
             if (stroke_ && stroke_width_ > 0.0F) {
-                target_->DrawGeometry(positioned, stroke_, stroke_width_, stroke_style_);
+                target_->DrawGeometry(positioned, stroke_,
+                    stroke_width_ + synthetic_stroke, stroke_style_);
             }
-            if (fill_) target_->FillGeometry(positioned, fill_);
+            if (fill_) {
+                target_->FillGeometry(positioned, fill_);
+                if (synthetic_stroke > 0.0F)
+                    target_->DrawGeometry(positioned, fill_, synthetic_stroke, stroke_style_);
+            }
         }
         release(positioned);
         release(sink);
@@ -292,6 +303,28 @@ private:
     bool has_bounds_{};
 };
 
+struct GeometryPart {
+    ID2D1Geometry* geometry{};
+    float synthetic_stroke{}; // Logical pen width; its outward radius is half.
+};
+
+// Shared by character and lower-ruby token mask generation, on cache misses.
+void draw_mask_part(ID2D1RenderTarget* target, const GeometryPart& part,
+    ID2D1Brush* white, float stroke_radius, bool stroke_only,
+    ID2D1StrokeStyle* round_stroke) {
+    if (stroke_only) {
+        if (stroke_radius > 0.0F)
+            target->DrawGeometry(part.geometry, white,
+                native_text_stroke_width(stroke_radius) + part.synthetic_stroke,
+                round_stroke);
+    } else {
+        target->FillGeometry(part.geometry, white);
+        if (part.synthetic_stroke > 0.0F)
+            target->DrawGeometry(part.geometry, white,
+                part.synthetic_stroke, round_stroke);
+    }
+}
+
 class GeometryCollector final : public IDWriteTextRenderer {
 public:
     GeometryCollector(ID2D1Factory* factory,
@@ -300,10 +333,10 @@ public:
         : factory_(factory), fonts_(fonts), font_(font) {}
 
     ~GeometryCollector() {
-        for (auto*& geometry : geometries_) release(geometry);
+        for (auto& part : geometries_) release(part.geometry);
     }
 
-    std::vector<ID2D1Geometry*> take_geometries() {
+    std::vector<GeometryPart> take_geometries() {
         return std::exchange(geometries_, {});
     }
 
@@ -353,10 +386,11 @@ public:
         ID2D1PathGeometry* path{};
         ID2D1GeometrySink* sink{};
         ID2D1TransformedGeometry* positioned{};
+        float synthetic_stroke{};
         auto result = factory_->CreatePathGeometry(&path);
         if (SUCCEEDED(result)) result = path->Open(&sink);
         if (SUCCEEDED(result)) {
-            result = fonts_.glyph_run_outline(font_, *run, sink);
+            result = fonts_.glyph_run_ink_outline(font_, *run, sink, synthetic_stroke);
         }
         if (sink) {
             const auto close_result = sink->Close();
@@ -369,6 +403,11 @@ public:
         if (SUCCEEDED(result) && positioned) {
             D2D1_RECT_F bounds{};
             if (SUCCEEDED(positioned->GetBounds(nullptr, &bounds))) {
+                const auto radius = synthetic_stroke * 0.5F;
+                bounds.left -= radius;
+                bounds.top -= radius;
+                bounds.right += radius;
+                bounds.bottom += radius;
                 if (!has_bounds_) {
                     bounds_ = bounds;
                     has_bounds_ = true;
@@ -379,7 +418,7 @@ public:
                     bounds_.bottom = std::max(bounds_.bottom, bounds.bottom);
                 }
             }
-            geometries_.push_back(positioned);
+            geometries_.push_back({positioned, synthetic_stroke});
             positioned = nullptr;
         }
         release(positioned);
@@ -400,13 +439,13 @@ private:
     ID2D1Factory* factory_{};
     kirakara::show::win32::detail::FontResolver& fonts_;
     const kirakara::show::win32::detail::ResolvedFont& font_;
-    std::vector<ID2D1Geometry*> geometries_;
+    std::vector<GeometryPart> geometries_;
     D2D1_RECT_F bounds_{};
     bool has_bounds_{};
 };
 
 struct CachedTextGeometry {
-    std::vector<ID2D1Geometry*> parts;
+    std::vector<GeometryPart> parts;
     D2D1_RECT_F bounds{};
     bool has_bounds{};
 };
@@ -492,7 +531,7 @@ struct PreviewRenderer {
 
     const CachedGlyphBmp* get_glyph_bmp(std::string_view text, float fs,
         bool bold, float sw) {
-        auto key = text_cache_key(text, fs, bold);
+        auto key = text_ink_cache_key(text, fs, bold);
         key += '|' + std::to_string(static_cast<int>(sw * 10.0F));
         key += "|ss" + std::to_string(static_cast<int>(glyph_bitmap_supersample));
         if (auto it = glyph_bmp_cache.find(key); it != glyph_bmp_cache.end())
@@ -537,12 +576,8 @@ struct PreviewRenderer {
             ID2D1SolidColorBrush* wb{};
             brt->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, 1), &wb);
             if (wb) {
-                for (auto* g : geom->parts) {
-                    if (sw > 0.0F && stroke_only)
-                        brt->DrawGeometry(g, wb, native_text_stroke_width(sw), round_stroke_style);
-                    if (!stroke_only)
-                        brt->FillGeometry(g, wb);
-                }
+                for (const auto& part : geom->parts)
+                    draw_mask_part(brt, part, wb, sw, stroke_only, round_stroke_style);
                 wb->Release();
             }
             const auto result = brt->EndDraw();
@@ -573,7 +608,7 @@ struct PreviewRenderer {
         if (chars.size() == 1)
             return get_glyph_bmp(chars[0], fs, bold, sw);
 
-        std::string key = text_cache_key("", fs, bold) + "|tok|";
+        std::string key = text_ink_cache_key("", fs, bold) + "|tok|";
         for (const auto& ch : chars) { key += std::string(ch); key += '|'; }
         for (const float w : widths) {
             key += std::to_string(static_cast<int>(std::round(w * 100.0F)));
@@ -647,13 +682,8 @@ struct PreviewRenderer {
                 for (std::size_t i = 0; i < geoms.size(); ++i) {
                     brt->SetTransform(D2D1::Matrix3x2F::Translation(
                         offsets[i] - bl, -bt));
-                    for (auto* g : geoms[i]->parts) {
-                        if (sw > 0.0F && stroke_only)
-                            brt->DrawGeometry(g, wb,
-                                native_text_stroke_width(sw), round_stroke_style);
-                        if (!stroke_only)
-                            brt->FillGeometry(g, wb);
-                    }
+                    for (const auto& part : geoms[i]->parts)
+                        draw_mask_part(brt, part, wb, sw, stroke_only, round_stroke_style);
                 }
                 wb->Release();
             }
@@ -766,7 +796,7 @@ struct PreviewRenderer {
     void clear_geometry_cache() {
         for (auto& [key, cached] : text_geometry_cache) {
             static_cast<void>(key);
-            for (auto*& geometry : cached.parts) release(geometry);
+            for (auto& part : cached.parts) release(part.geometry);
         }
         text_geometry_cache.clear();
     }
@@ -1035,6 +1065,10 @@ struct PreviewRenderer {
         return key;
     }
 
+    std::string text_ink_cache_key(std::string_view text, float size, bool bold) {
+        return text_cache_key(text, size, bold) + "|small-skia-v1";
+    }
+
     IDWriteTextLayout* text_layout(std::string_view text, float size, bool bold) {
         auto key = text_cache_key(text, size, bold);
         if (const auto found = text_layout_cache.find(key);
@@ -1118,7 +1152,7 @@ struct PreviewRenderer {
 
     const CachedTextGeometry* text_geometry(std::string_view text, float size,
         bool bold) {
-        auto key = text_cache_key(text, size, bold);
+        auto key = text_ink_cache_key(text, size, bold);
         if (const auto found = text_geometry_cache.find(key);
                 found != text_geometry_cache.end()) return &found->second;
         auto* layout = text_layout(text, size, bold);
@@ -1134,7 +1168,7 @@ struct PreviewRenderer {
         }
         collector->Release();
         if (FAILED(result) || cached.parts.empty()) {
-            for (auto*& geometry : cached.parts) release(geometry);
+            for (auto& part : cached.parts) release(part.geometry);
             return nullptr;
         }
         return &text_geometry_cache.emplace(std::move(key),

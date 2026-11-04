@@ -1,4 +1,5 @@
 #include "font_resolver.hpp"
+#include "synthetic_bold.hpp"
 
 #include <dwrite_3.h>
 
@@ -380,18 +381,10 @@ IDWriteTextFormat* FontResolver::create_format(
     return format;
 }
 
-HRESULT FontResolver::outline_face(const ResolvedFont& font,
-    IDWriteFontFace* base, IDWriteFontFace** result) {
-    if (!result) return E_POINTER;
-    *result = nullptr;
-    if (!base || !factory_) return E_INVALIDARG;
-    if (!font.explicit_face || !font.additional_bold
-            || (base->GetSimulations() & DWRITE_FONT_SIMULATIONS_BOLD)) {
-        base->AddRef(); *result = base; return S_OK;
-    }
+HRESULT FontResolver::outline_face_info(IDWriteFontFace* base,
+    OutlineFace** result) {
     if (const auto found = outline_faces_.find(base); found != outline_faces_.end()) {
-        found->second->outline->AddRef();
-        *result = found->second->outline;
+        *result = found->second.get();
         return S_OK;
     }
     int weight{};
@@ -406,14 +399,33 @@ HRESULT FontResolver::outline_face(const ResolvedFont& font,
     }
     auto cached = std::make_unique<OutlineFace>();
     cached->base = base; base->AddRef();
-    if (weight < 600) {
-        const auto hr = native_bold_face(factory_, base, &cached->outline);
-        if (FAILED(hr)) return hr;
-    } else {
-        cached->outline = base; base->AddRef();
+    cached->needs_bold = weight < 600;
+    *result = cached.get();
+    outline_faces_.emplace(base, std::move(cached));
+    return S_OK;
+}
+
+HRESULT FontResolver::outline_face(const ResolvedFont& font,
+    IDWriteFontFace* base, IDWriteFontFace** result) {
+    if (!result) return E_POINTER;
+    *result = nullptr;
+    if (!base || !factory_) return E_INVALIDARG;
+    if (!font.explicit_face || !font.additional_bold
+            || (base->GetSimulations() & DWRITE_FONT_SIMULATIONS_BOLD)) {
+        base->AddRef(); *result = base; return S_OK;
+    }
+    OutlineFace* cached{};
+    const auto hr = outline_face_info(base, &cached);
+    if (FAILED(hr)) return hr;
+    if (!cached->outline) {
+        if (cached->needs_bold) {
+            const auto created = native_bold_face(factory_, base, &cached->outline);
+            if (FAILED(created)) return created;
+        } else {
+            cached->outline = base; base->AddRef();
+        }
     }
     cached->outline->AddRef(); *result = cached->outline;
-    outline_faces_.emplace(base, std::move(cached));
     return S_OK;
 }
 
@@ -426,6 +438,29 @@ HRESULT FontResolver::glyph_run_outline(const ResolvedFont& font,
         run.isSideways, (run.bidiLevel & 1U) != 0, sink);
     release(face);
     return hr;
+}
+
+HRESULT FontResolver::glyph_run_ink_outline(const ResolvedFont& font,
+    const DWRITE_GLYPH_RUN& run, IDWriteGeometrySink* sink,
+    float& synthetic_stroke) {
+    synthetic_stroke = 0.0F;
+    if (!run.fontFace || !factory_ || !sink) return E_INVALIDARG;
+    const auto stroke = small_text_skia_stroke(run.fontEmSize);
+    if (stroke > 0.0F && font.explicit_face && font.additional_bold
+            && !(run.fontFace->GetSimulations() & DWRITE_FONT_SIMULATIONS_BOLD)) {
+        OutlineFace* info{};
+        const auto hr = outline_face_info(run.fontFace, &info);
+        if (FAILED(hr)) return hr;
+        if (info->needs_bold) {
+            // Keep every layout glyph/position and variable-font axis. Native
+            // BOLD is created lazily only when the larger-size path needs it.
+            synthetic_stroke = stroke;
+            return run.fontFace->GetGlyphRunOutline(run.fontEmSize,
+                run.glyphIndices, run.glyphAdvances, run.glyphOffsets,
+                run.glyphCount, run.isSideways, (run.bidiLevel & 1U) != 0, sink);
+        }
+    }
+    return glyph_run_outline(font, run, sink);
 }
 
 } // namespace kirakara::show::win32::detail
