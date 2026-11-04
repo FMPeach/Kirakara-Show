@@ -56,13 +56,20 @@ public:
         IDWriteFontFace** result);
     HRESULT glyph_run_outline(const ResolvedFont& font,
         const DWRITE_GLYPH_RUN& run, IDWriteGeometrySink* sink);
+    // Small text uses the base outline plus a cached bitmap stroke. The native
+    // outline entry point above remains available to independent renderers.
+    HRESULT glyph_run_ink_outline(const ResolvedFont& font,
+        const DWRITE_GLYPH_RUN& run, IDWriteGeometrySink* sink,
+        float& synthetic_stroke);
 
 private:
     struct OutlineFace {
         IDWriteFontFace* base{};
         IDWriteFontFace* outline{};
+        bool needs_bold{};
         ~OutlineFace();
     };
+    HRESULT outline_face_info(IDWriteFontFace* base, OutlineFace** result);
     IDWriteFactory* factory_{};
     IDWriteFactory2* factory2_{};
     IDWriteFontCollection* collection_{};
