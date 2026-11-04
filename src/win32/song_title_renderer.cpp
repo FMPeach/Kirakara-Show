@@ -83,7 +83,9 @@ D2D1_COLOR_F color_from_packed(PackedColor value, float opacity = 1.0F) {
 
 class GeometryCollector final : public IDWriteTextRenderer {
 public:
-    explicit GeometryCollector(ID2D1Factory* factory) : factory_(factory) {}
+    GeometryCollector(ID2D1Factory* factory, detail::FontResolver& fonts,
+        const detail::ResolvedFont& font)
+        : factory_(factory), fonts_(fonts), font_(font) {}
 
     ~GeometryCollector() {
         for (auto*& geometry : geometries_) release(geometry);
@@ -145,10 +147,7 @@ public:
         auto result = factory_->CreatePathGeometry(&path);
         if (SUCCEEDED(result)) result = path->Open(&sink);
         if (SUCCEEDED(result)) {
-            result = run->fontFace->GetGlyphRunOutline(run->fontEmSize,
-                run->glyphIndices, run->glyphAdvances, run->glyphOffsets,
-                run->glyphCount, run->isSideways,
-                (run->bidiLevel & 1U) != 0, sink);
+            result = fonts_.glyph_run_outline(font_, *run, sink);
         }
         if (sink) {
             const auto closed = sink->Close();
@@ -179,6 +178,8 @@ public:
 private:
     LONG references_{1};
     ID2D1Factory* factory_{};
+    detail::FontResolver& fonts_;
+    const detail::ResolvedFont& font_;
     std::vector<ID2D1Geometry*> geometries_;
 };
 
@@ -368,7 +369,8 @@ struct SongTitleRenderer::Impl {
         text_layout->GetMetrics(&metrics);
         CachedGlyph created;
         created.width = std::max(1.0F, metrics.widthIncludingTrailingWhitespace);
-        auto* collector = new GeometryCollector(d2d);
+        auto* collector = new GeometryCollector(d2d, font_resolver,
+            font_resolver.resolve(style.font_families, style.font_bold));
         const auto result = text_layout->Draw(nullptr, collector, 0.0F, 0.0F);
         release(text_layout);
         if (SUCCEEDED(result)) created.geometry = collector->take();

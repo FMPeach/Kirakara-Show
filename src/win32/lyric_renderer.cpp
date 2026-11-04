@@ -158,9 +158,11 @@ TextPaint role_paint(const std::string& role, const DemoStyle& style) {
 class OutlineTextRenderer final : public IDWriteTextRenderer {
 public:
     OutlineTextRenderer(ID2D1Factory* factory, ID2D1RenderTarget* target,
-        ID2D1Brush* fill, ID2D1Brush* stroke, float stroke_width)
+        ID2D1Brush* fill, ID2D1Brush* stroke, float stroke_width,
+        kirakara::show::win32::detail::FontResolver& fonts,
+        const kirakara::show::win32::detail::ResolvedFont& font)
         : factory_(factory), target_(target), fill_(fill), stroke_(stroke),
-          stroke_width_(stroke_width) {
+          stroke_width_(stroke_width), fonts_(fonts), font_(font) {
         D2D1_STROKE_STYLE_PROPERTIES properties = D2D1::StrokeStyleProperties();
         properties.startCap = D2D1_CAP_STYLE_ROUND;
         properties.endCap = D2D1_CAP_STYLE_ROUND;
@@ -232,10 +234,7 @@ public:
         HRESULT result = factory_->CreatePathGeometry(&path);
         if (SUCCEEDED(result)) result = path->Open(&sink);
         if (SUCCEEDED(result)) {
-            result = run->fontFace->GetGlyphRunOutline(run->fontEmSize,
-                run->glyphIndices, run->glyphAdvances, run->glyphOffsets,
-                run->glyphCount, run->isSideways,
-                (run->bidiLevel & 1U) != 0, sink);
+            result = fonts_.glyph_run_outline(font_, *run, sink);
         }
         if (sink) {
             const auto close_result = sink->Close();
@@ -286,6 +285,8 @@ private:
     ID2D1Brush* fill_{};
     ID2D1Brush* stroke_{};
     float stroke_width_{};
+    kirakara::show::win32::detail::FontResolver& fonts_;
+    const kirakara::show::win32::detail::ResolvedFont& font_;
     ID2D1StrokeStyle* stroke_style_{};
     D2D1_RECT_F bounds_{};
     bool has_bounds_{};
@@ -293,7 +294,10 @@ private:
 
 class GeometryCollector final : public IDWriteTextRenderer {
 public:
-    explicit GeometryCollector(ID2D1Factory* factory) : factory_(factory) {}
+    GeometryCollector(ID2D1Factory* factory,
+        kirakara::show::win32::detail::FontResolver& fonts,
+        const kirakara::show::win32::detail::ResolvedFont& font)
+        : factory_(factory), fonts_(fonts), font_(font) {}
 
     ~GeometryCollector() {
         for (auto*& geometry : geometries_) release(geometry);
@@ -352,9 +356,7 @@ public:
         auto result = factory_->CreatePathGeometry(&path);
         if (SUCCEEDED(result)) result = path->Open(&sink);
         if (SUCCEEDED(result)) {
-            result = run->fontFace->GetGlyphRunOutline(run->fontEmSize,
-                run->glyphIndices, run->glyphAdvances, run->glyphOffsets,
-                run->glyphCount, run->isSideways, run->bidiLevel % 2 != 0, sink);
+            result = fonts_.glyph_run_outline(font_, *run, sink);
         }
         if (sink) {
             const auto close_result = sink->Close();
@@ -396,6 +398,8 @@ public:
 private:
     LONG references_{1};
     ID2D1Factory* factory_{};
+    kirakara::show::win32::detail::FontResolver& fonts_;
+    const kirakara::show::win32::detail::ResolvedFont& font_;
     std::vector<ID2D1Geometry*> geometries_;
     D2D1_RECT_F bounds_{};
     bool has_bounds_{};
@@ -1119,7 +1123,7 @@ struct PreviewRenderer {
                 found != text_geometry_cache.end()) return &found->second;
         auto* layout = text_layout(text, size, bold);
         if (!layout) return nullptr;
-        auto* collector = new GeometryCollector(d2d);
+        auto* collector = new GeometryCollector(d2d, font_resolver, font_state(bold));
         const auto result = layout->Draw(nullptr, collector, 0.0F, 0.0F);
         release(layout);
         CachedTextGeometry cached;

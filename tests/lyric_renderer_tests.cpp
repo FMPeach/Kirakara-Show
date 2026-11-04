@@ -6,8 +6,10 @@
 
 #include <windows.h>
 #include <d2d1.h>
+#include <dwrite.h>
 
 #include <cstdlib>
+#include <cstdint>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -179,6 +181,40 @@ int main() {
             expect(draw_cached(renderer, L"Arial Regular", cache_style) == regular_pixels,
                 "turning Bold back off restores cached normal frame");
         }
+
+        IDWriteFactory* fonts_factory{};
+        expect(SUCCEEDED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+            reinterpret_cast<IUnknown**>(&fonts_factory))), "bitmap font factory");
+        IDWriteFontCollection* fonts{};
+        expect(SUCCEEDED(fonts_factory->GetSystemFontCollection(&fonts)), "bitmap font collection");
+        UINT32 noto_index{}; BOOL has_noto{};
+        fonts->FindFamilyName(L"Noto Sans JP", &noto_index, &has_noto);
+        auto coverage = [](const std::vector<std::uint8_t>& pixels) {
+            std::uint64_t total{};
+            for (std::size_t i = 3; i < pixels.size(); i += 4) total += pixels[i];
+            return total;
+        };
+        for (const auto* family : {L"Arial Regular", L"Noto Sans JP Medium",
+            L"Noto Sans JP SemiBold", L"Noto Sans JP Heavy"}) {
+            if (std::wstring_view{family}.starts_with(L"Noto") && !has_noto) continue;
+            const bool intrinsic_bold = std::wstring_view{family}.ends_with(L"SemiBold")
+                || std::wstring_view{family}.ends_with(L"Heavy");
+            const auto normal = draw_cached(renderer, family, cache_style);
+            for (int track = 0; track < 3; ++track) {
+                auto bold_style = cache_style;
+                if (track == 0) bold_style.font_bold = true;
+                if (track == 1) bold_style.ruby_bold = true;
+                if (track == 2) bold_style.ruby2_bold = true;
+                const auto pixels = draw_cached(renderer, family, bold_style);
+                if (intrinsic_bold) expect(pixels == normal,
+                    "intrinsic SemiBold/Heavy bitmap is unchanged by additional Bold");
+                else expect(pixels != normal && coverage(pixels) > coverage(normal),
+                    "native draw-only Bold increases main/ruby/ruby2 bitmap coverage");
+                expect(draw_cached(renderer, family, cache_style) == normal,
+                    "normal bitmap cache survives native Bold on every track");
+            }
+        }
+        fonts->Release(); fonts_factory->Release();
 
         win32::D3D11TextureSurface gpu_surface;
         expect(gpu_surface.resize(320, 180), "D3D11 texture target creation");

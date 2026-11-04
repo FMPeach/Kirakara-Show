@@ -117,7 +117,8 @@ int main() {
     {
         FontResolver resolver; expect(resolver.initialize(factory), "font resolver initialization");
         const auto& legacy = resolver.resolve({L"Microsoft YaHei"}, true);
-        expect(legacy.target_weight == 700, "legacy family Bold is still 700");
+        expect(legacy.layout_weight == 700 && !legacy.draw_bold_simulation,
+            "legacy family Bold is still a real 700 request");
         expect(&legacy == &resolver.resolve({L"Microsoft YaHei"}, true), "resolution is cached");
         auto* format = resolver.create_format(legacy, 62);
         expect(format && format->GetFontWeight() == DWRITE_FONT_WEIGHT_BOLD, "numeric text format");
@@ -127,15 +128,17 @@ int main() {
             "trimmed lookup retains the original requested name");
         if (installed(collection, L"Segoe UI")) {
             const auto& semibold = resolver.resolve({L"Segoe UI SemiBold"}, true);
-            expect(semibold.target_weight == 600 && semibold.matched_weight >= 600,
+            expect(semibold.layout_weight == 600 && semibold.matched_weight >= 600
+                    && !semibold.draw_bold_simulation,
                 "intrinsic SemiBold is not made heavier than Edge's face");
         }
 
         const auto& missing = resolver.resolve({L"Kirakara Missing Heavy", L"Arial"}, true);
         expect(missing.request.requested_name == L"Kirakara Missing Heavy", "missing original retained");
         expect(missing.request.family_name == L"Kirakara Missing Heavy", "unusable stripped family rejected");
-        expect(missing.target_weight == 900, "missing Heavy carries weight into fallback");
+        expect(missing.layout_weight == 900, "missing Heavy carries weight into fallback");
         expect(missing.family_name == L"Arial", "next installed family selected");
+        expect(missing.matched_base_weight > 0, "fallback records its actual matched base weight");
         test_exact_family(factory, collection);
 
         if (installed(collection, L"Noto Sans JP")) {
@@ -148,26 +151,32 @@ int main() {
                     const auto& result = resolver.resolve({name}, bold);
                     expect(result.family_name == L"Noto Sans JP", "named Noto family");
                     expect(result.request.base_weight == test.base, "named Noto base weight");
-                    expect(result.target_weight >= test.base, "Bold does not reduce weight");
-                    expect((result.simulations & DWRITE_FONT_SIMULATIONS_BOLD) == 0,
-                        "real Noto faces used without simulation");
+                    expect(result.layout_weight == test.base, "named face layout retains base weight");
+                    expect((result.layout_simulations & DWRITE_FONT_SIMULATIONS_BOLD) == 0,
+                        "named Noto layout uses a real base face");
+                    expect(result.draw_bold_simulation == (bold && result.matched_weight < 600),
+                        "draw-only simulation follows the actual base face");
                     std::wcout << name << L" bold=" << bold << L" base=" << result.request.base_weight
-                        << L" target=" << result.target_weight << L" matched=" << result.matched_weight << L'\n';
+                        << L" layout=" << result.layout_weight << L" matched=" << result.matched_weight << L'\n';
                 }
             }
             const auto& medium = resolver.resolve({L"Noto Sans JP Medium"}, true);
-            expect(medium.target_weight > 500 && medium.matched_weight > 500, "Medium + Bold is heavier");
+            expect(medium.layout_weight == 500 && medium.matched_weight == 500
+                    && medium.additional_bold && medium.draw_bold_simulation,
+                "Medium + Bold keeps Medium layout and requests native outline simulation");
+            expect(medium.cache_key != resolver.resolve({L"Noto Sans JP Medium"}, false).cache_key,
+                "equal layout weights retain separate normal/Bold geometry identities");
             const auto& heavy = resolver.resolve({L"Noto Sans JP Heavy"}, true);
-            expect(heavy.target_weight == 900, "Heavy clamp");
+            expect(heavy.layout_weight == 900 && !heavy.draw_bold_simulation, "Heavy stays real Heavy");
             expect(medium.cache_key != heavy.cache_key, "final font identity separates caches");
             const auto& full_bold = resolver.resolve({L"Noto Sans JP Bold"}, true);
-            expect(full_bold.full_face_match && full_bold.target_weight == 700,
+            expect(full_bold.full_face_match && full_bold.layout_weight == 700,
                 "confirmed full Bold face not doubled");
             const auto& full_plain = resolver.resolve({L"Noto Sans JP Bold"}, false);
-            expect(full_plain.target_weight == 700, "named Bold face remains Bold when UI toggle off");
+            expect(full_plain.layout_weight == 700, "named Bold face remains Bold when UI toggle off");
 
             const auto& fallback = resolver.resolve({L"Arial Heavy", L"Noto Sans JP"}, false);
-            expect(fallback.target_weight == 900, "fallback target weight retained");
+            expect(fallback.layout_weight == 900, "fallback layout weight retained");
             auto* fallback_format = resolver.create_format(fallback, 62);
             IDWriteTextLayout* layout{};
             expect(SUCCEEDED(factory->CreateTextLayout(L"A永", 2, fallback_format, 1000, 100, &layout)),
@@ -184,7 +193,7 @@ int main() {
 
         if (installed(collection, L"MotoyaLMaru W3 Mono")) {
             const auto& regular_only = resolver.resolve({L"MotoyaLMaru W3 Mono"}, true);
-            expect(regular_only.target_weight == 700 && regular_only.matched_weight >= 600,
+            expect(regular_only.layout_weight == 700 && regular_only.matched_weight >= 600,
                 "Regular-only font permits DirectWrite native Bold matching");
         }
     }

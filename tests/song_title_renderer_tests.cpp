@@ -4,8 +4,10 @@
 #include "kirakara/show/win32/song_title_renderer.hpp"
 
 #include <windows.h>
+#include <dwrite.h>
 
 #include <cstdlib>
+#include <cstdint>
 #include <iostream>
 #include <string_view>
 #include <utility>
@@ -85,6 +87,45 @@ int main() {
         clear(surface);
         expect(renderer.render(weighted_title, 1.0, 0.666), "Regular title after Heavy");
         expect(surface.read_rgba8() == regular_title, "title cache returns to original Regular");
+
+        IDWriteFactory* fonts_factory{};
+        expect(SUCCEEDED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+            reinterpret_cast<IUnknown**>(&fonts_factory))), "title font factory");
+        IDWriteFontCollection* fonts{};
+        expect(SUCCEEDED(fonts_factory->GetSystemFontCollection(&fonts)), "title font collection");
+        UINT32 noto_index{}; BOOL has_noto{};
+        fonts->FindFamilyName(L"Noto Sans JP", &noto_index, &has_noto);
+        for (const auto* family : {L"Arial Regular", L"Noto Sans JP Medium",
+            L"Noto Sans JP SemiBold", L"Noto Sans JP Heavy"}) {
+            if (std::wstring_view{family}.starts_with(L"Noto") && !has_noto) continue;
+            auto native_title = weighted_title;
+            native_title.blocks.back().lines = {"mawa ryoku MWm09"};
+            native_title.blocks.back().style.font_families = {family};
+            native_title.blocks.back().style.font_size = 22;
+            native_title.blocks.back().style.font_bold = false;
+            clear(surface);
+            expect(renderer.render(native_title, 1.0, 0.666), "base title bitmap");
+            const auto normal = surface.read_rgba8();
+            native_title.blocks.back().style.font_bold = true;
+            clear(surface);
+            expect(renderer.render(native_title, 1.0, 0.666), "draw-only Bold title bitmap");
+            const auto bold = surface.read_rgba8();
+            const bool intrinsic_bold = std::wstring_view{family}.ends_with(L"SemiBold")
+                || std::wstring_view{family}.ends_with(L"Heavy");
+            if (intrinsic_bold) expect(bold == normal, "title keeps intrinsic SemiBold/Heavy geometry");
+            else {
+                std::uint64_t normal_alpha{}, bold_alpha{};
+                for (std::size_t i = 3; i < normal.size(); i += 4) {
+                    normal_alpha += normal[i]; bold_alpha += bold[i];
+                }
+                expect(bold != normal && bold_alpha > normal_alpha, "title uses the native simulated outline");
+            }
+            native_title.blocks.back().style.font_bold = false;
+            clear(surface);
+            expect(renderer.render(native_title, 1.0, 0.666), "base title after Bold");
+            expect(surface.read_rgba8() == normal, "title normal/Bold geometry caches are isolated");
+        }
+        fonts->Release(); fonts_factory->Release();
 
         clear(surface);
         expect(renderer.render(config, 0.0, 0.666),

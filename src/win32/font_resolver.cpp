@@ -3,6 +3,8 @@
 #include <dwrite_3.h>
 
 #include <algorithm>
+#include <bit>
+#include <cstdint>
 #include <string_view>
 
 namespace kirakara::show::win32::detail {
@@ -136,9 +138,83 @@ void append_key_name(std::string& key, std::wstring_view name) {
     }
 }
 
+void append_face_identity(std::string& key, IDWriteFontFace* face) {
+    key += "|face:" + std::to_string(face->GetIndex());
+    UINT32 count{};
+    if (SUCCEEDED(face->GetFiles(&count, nullptr))) {
+        std::vector<IDWriteFontFile*> files(count);
+        if (SUCCEEDED(face->GetFiles(&count, files.data()))) {
+            for (auto* file : files) {
+                const void* data{}; UINT32 size{};
+                IDWriteFontFileLoader* loader{};
+                if (SUCCEEDED(file->GetLoader(&loader))
+                        && SUCCEEDED(file->GetReferenceKey(&data, &size))) {
+                    key += '|' + std::to_string(reinterpret_cast<std::uintptr_t>(loader));
+                    key += ':' + std::to_string(size) + ':';
+                    key.append(static_cast<const char*>(data), size);
+                }
+                release(loader);
+            }
+        }
+        for (auto*& file : files) release(file);
+    }
+    IDWriteFontFace5* face5{};
+    if (SUCCEEDED(face->QueryInterface(IID_PPV_ARGS(&face5)))) {
+        const auto axis_count = face5->GetFontAxisValueCount();
+        std::vector<DWRITE_FONT_AXIS_VALUE> axes(axis_count);
+        if (SUCCEEDED(face5->GetFontAxisValues(axes.data(), axis_count))) {
+            for (const auto& axis : axes) {
+                key += "|axis:" + std::to_string(static_cast<UINT32>(axis.axisTag));
+                key += ':' + std::to_string(std::bit_cast<std::uint32_t>(axis.value));
+            }
+        }
+        release(face5);
+    }
+}
+
+HRESULT native_bold_face(IDWriteFactory* factory, IDWriteFontFace* base,
+    IDWriteFontFace** result) {
+    const auto simulations = static_cast<DWRITE_FONT_SIMULATIONS>(
+        base->GetSimulations() | DWRITE_FONT_SIMULATIONS_BOLD);
+    IDWriteFontFace5* face5{};
+    auto hr = base->QueryInterface(IID_PPV_ARGS(&face5));
+    if (SUCCEEDED(hr)) {
+        const auto count = face5->GetFontAxisValueCount();
+        std::vector<DWRITE_FONT_AXIS_VALUE> axes(count);
+        IDWriteFontResource* resource{};
+        IDWriteFontFace5* simulated{};
+        hr = face5->GetFontAxisValues(axes.data(), count);
+        if (SUCCEEDED(hr)) hr = face5->GetFontResource(&resource);
+        if (SUCCEEDED(hr)) hr = resource->CreateFontFace(simulations,
+            axes.data(), count, &simulated);
+        if (SUCCEEDED(hr)) { *result = simulated; simulated = nullptr; }
+        release(simulated); release(resource); release(face5);
+        return hr;
+    }
+    if (hr != E_NOINTERFACE) return hr;
+
+    // Only static fonts can be reconstructed without the axis API.
+    const void* table{}; UINT32 table_size{}; void* context{}; BOOL variable{};
+    hr = base->TryGetFontTable(DWRITE_MAKE_OPENTYPE_TAG('f', 'v', 'a', 'r'),
+        &table, &table_size, &context, &variable);
+    if (context) base->ReleaseFontTable(context);
+    if (FAILED(hr)) return hr;
+    if (variable) return E_NOINTERFACE;
+    UINT32 count{};
+    hr = base->GetFiles(&count, nullptr);
+    if (FAILED(hr)) return hr;
+    std::vector<IDWriteFontFile*> files(count);
+    hr = base->GetFiles(&count, files.data());
+    if (SUCCEEDED(hr)) hr = factory->CreateFontFace(base->GetType(), count,
+        files.data(), base->GetIndex(), simulations, result);
+    for (auto*& file : files) release(file);
+    return hr;
+}
+
 } // namespace
 
 ResolvedFont::~ResolvedFont() { release(fallback_); }
+FontResolver::OutlineFace::~OutlineFace() { release(outline); release(base); }
 FontResolver::~FontResolver() { reset(); }
 
 bool FontResolver::initialize(IDWriteFactory* factory,
@@ -153,6 +229,7 @@ bool FontResolver::initialize(IDWriteFactory* factory,
 }
 
 void FontResolver::reset() {
+    outline_faces_.clear();
     cache_.clear();
     release(collection_); release(factory2_); release(factory_);
 }
@@ -203,8 +280,10 @@ const ResolvedFont& FontResolver::resolve(
             result.style, result.stretch);
         if (base_font) result.matched_base_weight = base_font->GetWeight();
     }
-    result.target_weight = requested_font_weight(result.request.base_weight,
-        additional_bold, explicit_face, result.matched_base_weight);
+    result.explicit_face = explicit_face;
+    result.additional_bold = additional_bold;
+    result.layout_weight = requested_layout_weight(result.request.base_weight,
+        additional_bold, explicit_face);
 
     if (primary) append_unique(result.fallback_families, result.family_name);
     for (const auto& candidate : expanded) {
@@ -229,14 +308,23 @@ const ResolvedFont& FontResolver::resolve(
         }
         release(family);
     }
-    if (auto* selected = match(primary, result.target_weight,
+    if (!base_font && primary) {
+        base_font = match(primary, result.request.base_weight, result.style, result.stretch);
+        if (base_font) result.matched_base_weight = base_font->GetWeight();
+    }
+    IDWriteFontFace* layout_face{};
+    if (auto* selected = match(primary, result.layout_weight,
             result.style, result.stretch)) {
         result.matched_weight = selected->GetWeight();
-        result.simulations = selected->GetSimulations();
+        result.layout_simulations = selected->GetSimulations();
+        selected->CreateFontFace(&layout_face);
         release(selected);
     }
+    result.draw_bold_simulation = explicit_face && additional_bold
+        && result.matched_weight > 0 && result.matched_weight < 600
+        && !(result.layout_simulations & DWRITE_FONT_SIMULATIONS_BOLD);
 
-    // Let DirectWrite select each missing glyph with the SAME numeric weight,
+    // Let DirectWrite select each missing glyph with the SAME layout weight,
     // using the requested family chain before the normal Windows fallback.
     if (factory2_ && !result.fallback_families.empty()) {
         IDWriteFontFallbackBuilder* builder{};
@@ -262,11 +350,16 @@ const ResolvedFont& FontResolver::resolve(
     append_key_name(result.cache_key, result.family_name);
     for (const auto& name : result.fallback_families)
         append_key_name(result.cache_key, name);
-    for (const int value : {result.request.base_weight, result.target_weight,
-            result.matched_weight, static_cast<int>(result.style),
-            static_cast<int>(result.stretch), static_cast<int>(result.simulations)}) {
+    for (const int value : {result.request.base_weight, result.layout_weight,
+            result.matched_base_weight, result.matched_weight,
+            static_cast<int>(result.style), static_cast<int>(result.stretch),
+            static_cast<int>(result.layout_simulations),
+            static_cast<int>(result.explicit_face), static_cast<int>(additional_bold),
+            static_cast<int>(result.draw_bold_simulation)}) {
         result.cache_key += '|' + std::to_string(value);
     }
+    if (layout_face) append_face_identity(result.cache_key, layout_face);
+    release(layout_face);
     release(base_font); release(primary);
     return *cache_.emplace(std::move(key), std::move(resolved)).first->second;
 }
@@ -276,7 +369,7 @@ IDWriteTextFormat* FontResolver::create_format(
     if (!factory_) return nullptr;
     IDWriteTextFormat* format{};
     if (FAILED(factory_->CreateTextFormat(font.family_name.c_str(), collection_,
-            static_cast<DWRITE_FONT_WEIGHT>(font.target_weight), font.style,
+            static_cast<DWRITE_FONT_WEIGHT>(font.layout_weight), font.style,
             font.stretch, size, L"zh-CN", &format))) return nullptr;
     if (font.fallback_) {
         IDWriteTextFormat1* format1{};
@@ -285,6 +378,54 @@ IDWriteTextFormat* FontResolver::create_format(
         }
     }
     return format;
+}
+
+HRESULT FontResolver::outline_face(const ResolvedFont& font,
+    IDWriteFontFace* base, IDWriteFontFace** result) {
+    if (!result) return E_POINTER;
+    *result = nullptr;
+    if (!base || !factory_) return E_INVALIDARG;
+    if (!font.explicit_face || !font.additional_bold
+            || (base->GetSimulations() & DWRITE_FONT_SIMULATIONS_BOLD)) {
+        base->AddRef(); *result = base; return S_OK;
+    }
+    if (const auto found = outline_faces_.find(base); found != outline_faces_.end()) {
+        found->second->outline->AddRef();
+        *result = found->second->outline;
+        return S_OK;
+    }
+    int weight{};
+    IDWriteFontFace3* face3{};
+    if (SUCCEEDED(base->QueryInterface(IID_PPV_ARGS(&face3)))) {
+        weight = face3->GetWeight(); release(face3);
+    } else {
+        IDWriteFont* matched{};
+        const auto hr = collection_->GetFontFromFontFace(base, &matched);
+        if (FAILED(hr)) return hr;
+        weight = matched->GetWeight(); release(matched);
+    }
+    auto cached = std::make_unique<OutlineFace>();
+    cached->base = base; base->AddRef();
+    if (weight < 600) {
+        const auto hr = native_bold_face(factory_, base, &cached->outline);
+        if (FAILED(hr)) return hr;
+    } else {
+        cached->outline = base; base->AddRef();
+    }
+    cached->outline->AddRef(); *result = cached->outline;
+    outline_faces_.emplace(base, std::move(cached));
+    return S_OK;
+}
+
+HRESULT FontResolver::glyph_run_outline(const ResolvedFont& font,
+    const DWRITE_GLYPH_RUN& run, IDWriteGeometrySink* sink) {
+    IDWriteFontFace* face{};
+    auto hr = outline_face(font, run.fontFace, &face);
+    if (SUCCEEDED(hr)) hr = face->GetGlyphRunOutline(run.fontEmSize,
+        run.glyphIndices, run.glyphAdvances, run.glyphOffsets, run.glyphCount,
+        run.isSideways, (run.bidiLevel & 1U) != 0, sink);
+    release(face);
+    return hr;
 }
 
 } // namespace kirakara::show::win32::detail

@@ -15,7 +15,10 @@ $commit = (& git -C $root rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Cannot identify Show source commit.' }
 $tests = @('kirakara_show_tests', 'kirakara_show_song_title_tests',
   'kirakara_show_stage_frame_tests', 'kirakara_show_stage_overlay_tests',
-  'kirakara_show_cast_program_clock_tests', 'kirakara_show_native_stage_program_clock_tests')
+  'kirakara_show_cast_program_clock_tests', 'kirakara_show_native_stage_program_clock_tests',
+  'kirakara_show_font_request_tests', 'kirakara_show_font_resolver_tests',
+  'kirakara_show_font_draw_tests', 'kirakara_show_lyric_renderer_tests',
+  'kirakara_show_song_title_renderer_tests')
 & cmake -S $root -B $BuildDirectory -G Ninja -DCMAKE_BUILD_TYPE=Release -DKIRAKARA_BUILD_TESTS=ON
 if ($LASTEXITCODE -ne 0) { throw 'Show CMake configure failed.' }
 & cmake --build $BuildDirectory --parallel 2 --target show_host @tests
@@ -24,7 +27,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Show build failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Show unit tests failed.' }
 $dlls = @(Get-ChildItem -LiteralPath (Join-Path $BuildDirectory 'bin') -Filter '*show_host.dll' -File)
 if ($dlls.Count -ne 1) { throw 'Expected exactly one show_host DLL.' }
-# The production DLL is unchanged. Compare the existing C ABI, not GPU/TV behavior.
+# Compare the exported C ABI against the checked-in baseline.
 & (Join-Path $root 'tools/show_host_abi.ps1') -Dll $dlls[0].FullName `
   -Baseline (Join-Path $root 'tests/abi/show_host_exports.txt')
 if ($LASTEXITCODE -ne 0) { throw 'Show ABI verification failed.' }
