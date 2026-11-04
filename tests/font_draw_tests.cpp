@@ -178,14 +178,13 @@ IDWriteFont* match(IDWriteFontCollection* fonts, const wchar_t* family_name, int
     release(family); return font;
 }
 
-void fallback_test(IDWriteFactory* dwrite, ID2D1Factory* d2d, IDWriteFontCollection* system) {
-    const auto* fallback_family = installed(system, L"Noto Sans JP")
-        ? L"Noto Sans JP" : L"Segoe UI Symbol";
-    if (!installed(system, fallback_family)) {
-        std::cout << "SKIP: no optional symbol/CJK fallback font\n"; return;
-    }
+void fallback_test(IDWriteFactory* dwrite, ID2D1Factory* d2d,
+    IDWriteFontCollection* system, const wchar_t* fallback_family) {
     auto* latin_font = match(system, L"Arial", 400);
     auto* fallback_font = match(system, fallback_family, 700);
+    expect(fallback_font->GetWeight() >= 600
+            && fallback_font->GetSimulations() == DWRITE_FONT_SIMULATIONS_NONE,
+        "fallback fixture has a real Bold face");
     IDWriteFontFace* latin_face{}; IDWriteFontFace* fallback_face{};
     succeeded(latin_font->CreateFontFace(&latin_face), "fallback Latin coverage");
     succeeded(fallback_font->CreateFontFace(&fallback_face), "fallback candidate coverage");
@@ -196,14 +195,17 @@ void fallback_test(IDWriteFactory* dwrite, ID2D1Factory* d2d, IDWriteFontCollect
         succeeded(fallback_face->GetGlyphIndices(&ch, 1, &fallback_glyph), "fallback coverage lookup");
         if (!latin_glyph && fallback_glyph) { missing = static_cast<wchar_t>(ch); break; }
     }
-    release(fallback_face); release(latin_face); release(fallback_font); release(latin_font);
+    release(fallback_face); release(latin_face);
     expect(missing != 0, "a real glyph missing in Arial is available in the fallback");
+    std::wcout << L"Fallback fixture: " << fallback_family << L" glyph=U+"
+        << std::hex << static_cast<unsigned>(missing) << std::dec
+        << L" weight=" << fallback_font->GetWeight()
+        << L" simulations=" << fallback_font->GetSimulations() << L'\n';
     const std::wstring mixed_text{L'A', missing};
     IDWriteFactory3* factory3{};
     succeeded(dwrite->QueryInterface(IID_PPV_ARGS(&factory3)), "fallback test factory3");
     IDWriteFontSetBuilder* builder{}; succeeded(factory3->CreateFontSetBuilder(&builder), "fallback set builder");
-    auto add = [&](const wchar_t* source, int weight, const wchar_t* alias) {
-        auto* font = match(system, source, weight);
+    auto add = [&](IDWriteFont* font, const wchar_t* alias) {
         IDWriteFont3* font3{}; succeeded(font->QueryInterface(IID_PPV_ARGS(&font3)), "fallback font3");
         IDWriteFontFaceReference* reference{}; succeeded(font3->GetFontFaceReference(&reference), "fallback reference");
         const DWRITE_FONT_PROPERTY properties[]{
@@ -214,10 +216,11 @@ void fallback_test(IDWriteFactory* dwrite, ID2D1Factory* d2d, IDWriteFontCollect
 #else
         succeeded(builder->AddFontFaceReference(reference, properties, 2), "add fallback face");
 #endif
-        release(reference); release(font3); release(font);
+        release(reference); release(font3);
     };
-    add(L"Arial", 400, L"Kirakara Latin");
-    add(fallback_family, 700, L"Kirakara Fallback");
+    add(latin_font, L"Kirakara Latin");
+    add(fallback_font, L"Kirakara Fallback");
+    release(fallback_font); release(latin_font);
     IDWriteFontSet* set{}; succeeded(builder->CreateFontSet(&set), "fallback private set");
     IDWriteFontCollection1* collection{};
     succeeded(factory3->CreateFontCollectionFromFontSet(set, &collection), "fallback private collection");
@@ -324,8 +327,10 @@ int main() {
                 release(regular_outline); release(regular); release(resource); release(outline);
             }
             release(base5); release(base); release(base_font);
-        } else std::cout << "SKIP: optional Noto face/axis/fallback cases (font not installed)\n";
-        fallback_test(dwrite, d2d, system);
+        } else std::cout << "SKIP: optional Noto face/axis cases (font not installed)\n";
+        fallback_test(dwrite, d2d, system, L"Segoe UI");
+        if (installed(system, L"Noto Sans JP"))
+            fallback_test(dwrite, d2d, system, L"Noto Sans JP");
     }
     release(system); release(d2d); release(dwrite); CoUninitialize();
     std::cout << "Draw-only font Bold tests: " << checks << " checks passed.\n";
