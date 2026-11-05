@@ -56,7 +56,7 @@ public:
         IDWriteFontFace** result);
     HRESULT glyph_run_outline(const ResolvedFont& font,
         const DWRITE_GLYPH_RUN& run, IDWriteGeometrySink* sink);
-    // Small text uses the base outline plus a cached bitmap stroke. The native
+    // Small text exposes the base outline and pen width to the ink cache. The native
     // outline entry point above remains available to independent renderers.
     HRESULT glyph_run_ink_outline(const ResolvedFont& font,
         const DWRITE_GLYPH_RUN& run, IDWriteGeometrySink* sink,
