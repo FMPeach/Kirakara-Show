@@ -53,6 +53,33 @@ struct Fixture {
         expect(SUCCEEDED(target->EndDraw()), "read cached mask");
         return surface.read_rgba8();
     }
+    std::vector<std::uint8_t> reference_fill(const CachedTextGeometry& geometry,
+        const PreviewRenderer::CachedGlyphBmp& bmp) {
+        ID2D1BitmapRenderTarget* reference{};
+        const auto pixel_size = bmp.fill->GetPixelSize();
+        const auto format = D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,
+            D2D1_ALPHA_MODE_PREMULTIPLIED);
+        expect(SUCCEEDED(target->CreateCompatibleRenderTarget(&bmp.sz,
+            &pixel_size, &format, D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_NONE,
+            &reference)), "reference mask target");
+        reference->BeginDraw(); reference->Clear(D2D1::ColorF(0, 0, 0, 0));
+        reference->SetTransform(D2D1::Matrix3x2F::Translation(-bmp.ox, -bmp.oy));
+        ID2D1SolidColorBrush* white{};
+        expect(SUCCEEDED(reference->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1, 1), &white)),
+            "reference mask brush");
+        for (const auto& part : geometry.parts) {
+            reference->FillGeometry(part.geometry, white);
+            if (part.synthetic_stroke > 0)
+                reference->DrawGeometry(part.geometry, white,
+                    part.synthetic_stroke, renderer.round_stroke_style);
+        }
+        expect(SUCCEEDED(reference->EndDraw()), "reference mask draw");
+        auto image = bmp;
+        expect(SUCCEEDED(reference->GetBitmap(&image.fill)), "reference bitmap");
+        auto pixels = mask(image, false);
+        image.fill->Release(); white->Release(); reference->Release();
+        return pixels;
+    }
 };
 
 void check_bitmap_bounds(const PreviewRenderer::CachedGlyphBmp& bmp,
@@ -81,11 +108,25 @@ void check_geometry_bounds(const CachedTextGeometry& geometry, bool eligible, fl
         const auto stroke = eligible
             ? kirakara::show::win32::detail::small_text_skia_stroke(size) : 0.0F;
         close_to(part.synthetic_stroke, stroke, "geometry retains logical synthetic pen width");
+        expect(!part.ink || stroke > 0, "only eligible small runs cache a separate ink silhouette");
         D2D1_RECT_F bounds{};
         expect(SUCCEEDED(part.geometry->GetBounds(nullptr, &bounds)), "base path bounds");
         const auto radius = part.synthetic_stroke * 0.5F;
         bounds.left -= radius; bounds.top -= radius;
         bounds.right += radius; bounds.bottom += radius;
+        if (part.ink) {
+            D2D1_RECT_F ink{};
+            expect(SUCCEEDED(part.ink->GetBounds(nullptr, &ink)), "cached ink bounds");
+            constexpr float tolerance = 2 * D2D1_DEFAULT_FLATTENING_TOLERANCE
+                / PreviewRenderer::glyph_bitmap_supersample;
+            expect(ink.left >= bounds.left - tolerance && ink.top >= bounds.top - tolerance
+                && ink.right <= bounds.right + tolerance && ink.bottom <= bounds.bottom + tolerance,
+                "cached ink stays inside its conservative bitmap envelope");
+            float area{}, base_area{};
+            expect(SUCCEEDED(part.ink->ComputeArea(nullptr, &area))
+                && SUCCEEDED(part.geometry->ComputeArea(nullptr, &base_area)) && area > base_area,
+                "cached ink includes the synthetic expansion");
+        }
         if (first) { expected = bounds; first = false; }
         else {
             expected.left = std::min(expected.left, bounds.left);
@@ -119,6 +160,11 @@ void character_and_token_test(Fixture& fixture, const wchar_t* family, bool elig
                         "character bitmap cache identity is stable");
                 }
                 close_to(advance, renderer.measure(text, size, bold), "ink generation preserves advance");
+                if (eligible && bold && size < 30) {
+                    const auto* bmp = renderer.get_glyph_bmp(text, size, bold, 3);
+                    expect(fixture.mask(*bmp, false) == fixture.reference_fill(*geometry, *bmp),
+                        "individual glyph masks retain their exact stroke-and-fill rasterization");
+                }
             }
             const auto* base = renderer.get_glyph_bmp(text, size, false, 0);
             const auto normal = fixture.mask(*base, false);
@@ -194,6 +240,33 @@ void ruby_and_cache_test(Fixture& fixture) {
     expect(layouts == renderer.text_layout_cache.size()
         && geometries == renderer.text_geometry_cache.size()
         && bitmaps == renderer.glyph_bmp_cache.size(), "warm frames create no new layouts, geometry or bitmaps");
+
+    std::vector<ID2D1Geometry*> ink;
+    for (const auto& ch : chars) {
+        const auto* geometry = renderer.text_geometry(ch, 22, true);
+        expect(geometry->parts.size() == 1 && geometry->parts[0].ink, "lower-ruby cached letter ink");
+        ink.push_back(geometry->parts[0].ink);
+    }
+    for (const auto* text : {"uyork", "koryu", "ryuko", "kyour", "rokuy"}) {
+        const auto token_chars = PreviewRenderer::utf8_chars(text);
+        std::vector<float> token_widths;
+        for (const auto& ch : token_chars) token_widths.push_back(renderer.measure(ch, 22, true));
+        for (const float sw : {3.0F, 3.5F}) expect(renderer.get_token_bmp(
+            token_chars, token_widths, 4, 22, true, sw) != nullptr, "new word from cached letter ink");
+        for (std::size_t i = 0; i < chars.size(); ++i)
+            expect(renderer.text_geometry(chars[i], 22, true)->parts[0].ink == ink[i],
+                "new tokens and before/after masks reuse the same synthetic letter outline");
+    }
+    expect(layouts == renderer.text_layout_cache.size()
+        && geometries == renderer.text_geometry_cache.size(),
+        "new words made from cached letters create no new layouts or ink geometry");
+
+    const std::vector<std::string> spaced_chars{"r", " ", "y"};
+    std::vector<float> spaced_widths;
+    for (const auto& ch : spaced_chars) spaced_widths.push_back(renderer.measure(ch, 22, true));
+    const auto* spaced = renderer.get_token_bmp(spaced_chars, spaced_widths, 4, 22, true, 3);
+    expect(spaced && coverage(fixture.mask(*spaced, false)) > 0,
+        "empty space outlines preserve the surrounding token glyphs");
 }
 } // namespace
 
