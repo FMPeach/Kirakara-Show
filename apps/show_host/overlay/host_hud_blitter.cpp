@@ -85,9 +85,12 @@ bool HostHudRetainedBgraLayer::apply(void* target, const HostHudFrame& card, boo
             if (FAILED(context->CreateBitmap(D2D1::SizeU(card.width, card.height), nullptr, 0,
                     &properties, &p.underlay))) return false;
         }
-        const auto source = D2D1::RectU(card.x, card.y, card.x + card.width, card.y + card.height);
-        if (FAILED(p.underlay->CopyFromRenderTarget(nullptr, context, &source))) return false;
-        ++p.captures;
+        if (clean_changed || !old.visible || old.x != card.x || old.y != card.y
+                || old.width != card.width || old.height != card.height) {
+            const auto source = D2D1::RectU(card.x, card.y, card.x + card.width, card.y + card.height);
+            if (FAILED(p.underlay->CopyFromRenderTarget(nullptr, context, &source))) return false;
+            ++p.captures;
+        }
         if (!p.blitter.draw(context, card)) return false;
         changed = true;
     }

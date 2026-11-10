@@ -19,14 +19,16 @@ void publish_current_cast_program(ShowHost& host) {
         host.playback.current_media.loaded,
         host.playback.video_master_clock,
         host.playback.audio_processing.clock_offset_seconds,
-        host.playback.video_timeline_revision.load(std::memory_order_acquire));
+        host.playback.video_timeline_revision.load(std::memory_order_acquire),
+        host.hud.program_instance.load(), host.hud.discontinuity_revision.load());
 }
 
 void publish_current_cast_timeline(ShowHost& host) {
     publish_cast_timeline_snapshot(
         host.cast,
         host.playback.audio_processing.clock_offset_seconds,
-        host.playback.video_timeline_revision.load(std::memory_order_acquire));
+        host.playback.video_timeline_revision.load(std::memory_order_acquire),
+        host.hud.discontinuity_revision.load());
 }
 
 }  // namespace
@@ -365,6 +367,7 @@ bool handle_load(ShowHost& host, const LoadRequest& request) {
         }
         apply_audio_processing(host);
     }
+    host.hud.program_instance.fetch_add(1);
     bump_playback_revision(host);
     if (cast_owns_video) {
         publish_current_cast_program(host);
@@ -690,6 +693,7 @@ void maintain_video_master_sync(ShowHost& host) {
 }
 
 void handle_seek(ShowHost& host, double seconds) {
+    host.hud.discontinuity_revision.fetch_add(1);
     clear_native_video_start_gate(host);
     clear_cast_video_start_gate(host.cast);
     const bool was_playing = host.playback.state.load() == SHOW_STATE_PLAYING;

@@ -16,7 +16,7 @@ CastProgramBindings cast_program_bindings(ShowHost& host) {
         &host.playback.duration,
         &host.playback.video_buffering,
         &host.playback.video_buffering_position,
-        host.window, &host.hud.state, &host.hud.qr, &host.hud.lan_available};
+        host.window, &host.hud.state, &host.hud.qr, &host.hud.lan_available, &host.hud.controller};
 }
 
 void publish_current_cast_program(ShowHost& host) {
@@ -31,7 +31,8 @@ void publish_current_cast_program(ShowHost& host) {
         host.playback.current_media.loaded,
         host.playback.video_master_clock,
         host.playback.audio_processing.clock_offset_seconds,
-        host.playback.video_timeline_revision.load(std::memory_order_acquire));
+        host.playback.video_timeline_revision.load(std::memory_order_acquire),
+        host.hud.program_instance.load(), host.hud.discontinuity_revision.load());
 }
 
 void rollback_cast_start(

@@ -160,6 +160,12 @@ endif()
 
 if(WIN32)
     if(KIRAKARA_BUILD_TESTS)
+        add_executable(kirakara_show_hud_controller_tests tests/host_hud_controller_tests.cpp
+            apps/show_host/overlay/host_hud_controller.cpp)
+        target_compile_features(kirakara_show_hud_controller_tests PRIVATE cxx_std_20)
+        add_test(NAME kirakara_show_hud_controller_tests COMMAND kirakara_show_hud_controller_tests)
+    endif()
+    if(KIRAKARA_BUILD_TESTS)
         add_executable(kirakara_show_directsound_audio_backend_tests
             tests/directsound_audio_backend_tests.cpp
             apps/show_host/audio/directsound_backend.cpp
@@ -222,6 +228,7 @@ if(WIN32)
     add_library(kirakara_show_host_hud STATIC
         apps/show_host/overlay/physical_hud_output.cpp
         apps/show_host/overlay/host_hud_renderer.cpp
+        apps/show_host/overlay/host_hud_controller.cpp
         apps/show_host/overlay/host_hud_blitter.cpp
         apps/show_host/overlay/lan_state_monitor.cpp)
     target_compile_features(kirakara_show_host_hud PRIVATE cxx_std_20)

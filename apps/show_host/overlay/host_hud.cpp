@@ -9,7 +9,21 @@ void refresh_host_lan_state(ShowHost& host) {
     render_physical_hud(host);
 }
 void render_physical_hud(ShowHost& host) {
-    if (!has_physical_stage_output(host) || has_ts_stage_output(host)) {
+    if (has_ts_stage_output(host)) {
+        static_cast<void>(host.hud.physical_output.set_visible(false));
+        return;
+    }
+    const auto playback_state = host.playback.state.load();
+    const bool active = host.playback.current_media.loaded && (playback_state == SHOW_STATE_PLAYING
+        || playback_state == SHOW_STATE_PAUSED || host.output_transition.native_transition_holding);
+    const bool advancing = playback_state == SHOW_STATE_PLAYING && !host.playback.video_buffering.load()
+        && !host.native_stage.native_video_start_pending;
+    const auto now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    const auto presentation = host.hud.controller.update({
+        host.hud.program_instance.load(), host.hud.discontinuity_revision.load(),
+        host.playback.position.load(), host.playback.duration.load(), now, active, advancing,
+        host.native_stage.stage_program_ready || (active && host.playback.current_media.video.empty() && advancing)});
+    if (!has_physical_stage_output(host)) {
         static_cast<void>(host.hud.physical_output.set_visible(false));
         return;
     }
@@ -18,7 +32,7 @@ void render_physical_hud(ShowHost& host) {
     const auto state = host.hud.state.load();
     const auto qr = host.hud.qr.load();
     const auto& frame = host.hud.physical_renderer.render(device,
-        profile.width, profile.height, state.get(), qr, host.hud.lan_available.load());
+        profile.width, profile.height, state.get(), qr, host.hud.lan_available.load(), presentation);
     if (!frame.visible) {
         static_cast<void>(host.hud.physical_output.set_visible(false));
         return;

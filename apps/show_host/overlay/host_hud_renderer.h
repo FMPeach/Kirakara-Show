@@ -1,5 +1,6 @@
 #pragma once
 #include "host_hud_state.h"
+#include "host_hud_controller.h"
 #include <cstdint>
 #include <memory>
 
@@ -16,9 +17,11 @@ public:
     HostHudRenderer();
     ~HostHudRenderer();
     const HostHudFrame& render(void* device, std::uint32_t width, std::uint32_t height,
-        const HostHudState* state, std::shared_ptr<const HostHudQrImage> image, bool lan_available);
+        const HostHudState* state, std::shared_ptr<const HostHudQrImage> image, bool lan_available,
+        HostHudPresentation presentation = {});
     void reset();
     std::uint64_t rasterizations() const noexcept;
+    std::uint64_t progress_updates() const noexcept;
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

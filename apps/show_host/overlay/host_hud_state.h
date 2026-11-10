@@ -37,6 +37,7 @@ struct HostHudQrImage {
 struct HostHudQueueItem {
     std::wstring title;
     std::wstring artist;
+    bool operator==(const HostHudQueueItem&) const = default;
 };
 
 struct HostHudState {

@@ -64,6 +64,27 @@ int main() {
         for (int i = 0; i < 100; ++i) expect(!renderer.render(device.native_d3d_device(), 1920, 1080, &state, corrupt, true).visible,
             "invalid image never exposes stale pixels");
         expect(renderer.rasterizations() == failed_draws, "invalid revision does not spin");
+        HostHudPresentation queue_phase{true, 1};
+        state.queue = {{L"第一首超长歌名 第一首超长歌名 第一首超长歌名", L"歌手"},
+            {L"第二首", L""}, {L"第三首", L"歌手"}, {L"第四首", L"歌手"}};
+        for (const bool qr_enabled : {false, true}) for (const bool queue_enabled : {false, true}) {
+            state.options = {qr_enabled, queue_enabled, false};
+            expect(renderer.render(device.native_d3d_device(), 1920, 1080, &state, image, true, queue_phase).visible
+                == (qr_enabled || queue_enabled), "independent switch combinations");
+            expect(renderer.render(device.native_d3d_device(), 1920, 1080, &state, image, false, queue_phase).visible
+                == queue_enabled, "offline only gates QR, not queue");
+        }
+        state.options = {false, true, false};
+        expect(renderer.render(device.native_d3d_device(), 1920, 1080, &state, {}, false, queue_phase).visible,
+            "queue works with no QR image or network");
+        const auto text_draws = renderer.rasterizations();
+        for (int i = 100; i >= 0; --i) renderer.render(device.native_d3d_device(), 1920, 1080, &state, {}, false,
+            {true, i / 100.0F});
+        expect(renderer.rasterizations() == text_draws && renderer.progress_updates() > 1,
+            "progress only paints a small stripe without font layout");
+        state.queue.clear();
+        expect(renderer.render(device.native_d3d_device(), 1920, 1080, &state, {}, false, queue_phase).visible,
+            "empty queue has its own prompt");
 
         expect(LanStateMonitor::usable_ipv4(0xc0a80102) && !LanStateMonitor::usable_ipv4(0x7f000001)
             && !LanStateMonitor::usable_ipv4(0xa9fe0001), "LAN is independent of Internet reachability");

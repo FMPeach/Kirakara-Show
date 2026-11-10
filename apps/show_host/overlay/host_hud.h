@@ -2,6 +2,7 @@
 #include "host_hud_renderer.h"
 #include "lan_state_monitor.h"
 #include "physical_hud_output.h"
+#include "host_hud_controller.h"
 #include "../show_host_api.h"
 #include <atomic>
 
@@ -14,6 +15,8 @@ struct HostHudRuntime {
     LanStateMonitor network;
     HostHudRenderer physical_renderer;
     PhysicalHudOutput physical_output;
+    HostHudController controller;
+    std::atomic<std::uint64_t> program_instance{}, discontinuity_revision{};
     ShowHostLanStateCallback callback{};
     void* callback_context{};
 };

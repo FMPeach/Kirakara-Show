@@ -104,13 +104,28 @@ void* active_cast_stage_texture(CastSession& cast) {
     return cast.stage_renderer.compositor().current_frame().overlay_texture;
 }
 
-static const HostHudFrame& render_cast_hud(CastSession& cast) {
+static const HostHudFrame& render_cast_hud(CastSession& cast, const CastProgramSnapshot& snapshot) {
     const auto state = cast.program.hud_state ? cast.program.hud_state->load() : nullptr;
     const auto qr = cast.program.hud_qr ? cast.program.hud_qr->load() : nullptr;
     const bool lan = cast.program.lan_available && cast.program.lan_available->load();
     const auto canvas = active_cast_canvas(cast);
+    const auto* program = &snapshot;
+    HostHudPresentation presentation;
+    if (program && cast.program.hud_controller && cast.program.valid()) {
+        const auto state_value = cast.program.playback_state->load();
+        const auto lifecycle = cast.lifecycle.snapshot();
+        const bool active = program->media_loaded && (state_value == SHOW_STATE_PLAYING
+            || state_value == SHOW_STATE_PAUSED || lifecycle.holding_previous_output);
+        presentation = cast.program.hud_controller->update({
+            program->hud_program_instance, program->hud_discontinuity_revision,
+            cast.program.published_position->load(), cast.program.published_duration->load(),
+            cast_monotonic_seconds(), active,
+            state_value == SHOW_STATE_PLAYING && !cast.program.published_buffering->load()
+                && !lifecycle.start_gate_pending,
+            cast.lifecycle.program_ready_for(program->video_timeline_revision)});
+    }
     return cast.hud_renderer.render(cast.stage_renderer.native_d3d_device(),
-        canvas.width, canvas.height, state.get(), qr, lan);
+        canvas.width, canvas.height, state.get(), qr, lan, presentation);
 }
 
 static std::shared_ptr<const D3D11Nv12CompositedFrame> compose_cast_nv12_overlays(
@@ -708,7 +723,9 @@ void publish_cast_program_snapshot(
         bool media_loaded,
         bool video_master_clock,
         double audio_clock_offset_seconds,
-        std::uint64_t video_timeline_revision) {
+        std::uint64_t video_timeline_revision,
+        std::uint64_t hud_program_instance,
+        std::uint64_t hud_discontinuity_revision) {
     auto next = std::make_shared<CastProgramSnapshot>();
     next->audio = std::move(audio);
     next->document =
@@ -722,6 +739,8 @@ void publish_cast_program_snapshot(
     next->video_master_clock = video_master_clock;
     next->audio_clock_offset_seconds = audio_clock_offset_seconds;
     next->video_timeline_revision = video_timeline_revision;
+    next->hud_program_instance = hud_program_instance;
+    next->hud_discontinuity_revision = hud_discontinuity_revision;
     cast.program_snapshot.store(std::move(next), std::memory_order_release);
 }
 
@@ -741,12 +760,14 @@ void publish_cast_overlay_snapshot(
 void publish_cast_timeline_snapshot(
         CastSession& cast,
         double audio_clock_offset_seconds,
-        std::uint64_t video_timeline_revision) {
+        std::uint64_t video_timeline_revision,
+        std::uint64_t hud_discontinuity_revision) {
     auto current = cast.program_snapshot.load(std::memory_order_acquire);
     if (!current) return;
     auto next = std::make_shared<CastProgramSnapshot>(*current);
     next->audio_clock_offset_seconds = audio_clock_offset_seconds;
     next->video_timeline_revision = video_timeline_revision;
+    next->hud_discontinuity_revision = hud_discontinuity_revision;
     cast.program_snapshot.store(std::move(next), std::memory_order_release);
 }
 
@@ -1398,7 +1419,7 @@ static void render_cast_compute_nv12_frame(
     std::shared_ptr<const D3D11Nv12CompositedFrame> candidate;
     std::shared_ptr<const CastNormalizedVideoFrame> candidate_base;
     bool candidate_is_current_program{};
-    const auto& hud = render_cast_hud(host.cast);
+    const auto& hud = render_cast_hud(host.cast, *host.program);
     if (hold_previous_program) {
         // Keep the old program pixels/time, while allowing new HUD/network
         // state to replace a card even during starvation or a source handoff.
@@ -1704,7 +1725,7 @@ void render_cast_frame(CastSession& cast) {
     }
     bool hud_changed{};
     static_cast<void>(host.cast.hud_bgra_layer.apply(compositor.current_frame().overlay_render_target,
-        render_cast_hud(host.cast), composed_new_cast_frame, hud_changed));
+        render_cast_hud(host.cast, *host.program), composed_new_cast_frame, hud_changed));
     composed_new_cast_frame = composed_new_cast_frame || hud_changed;
     if (composed_new_cast_frame) {
         // CastStageRenderer defers intermediate D2D flushes. Submit the fully

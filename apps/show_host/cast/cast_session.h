@@ -48,6 +48,7 @@ struct CastProgramSnapshot {
     bool video_master_clock{};
     double audio_clock_offset_seconds{};
     std::uint64_t video_timeline_revision{};
+    std::uint64_t hud_program_instance{}, hud_discontinuity_revision{};
 
     [[nodiscard]] bool valid() const noexcept;
 };
@@ -63,6 +64,7 @@ struct CastProgramBindings {
     const std::atomic<std::shared_ptr<const HostHudState>>* hud_state{};
     const std::atomic<std::shared_ptr<const HostHudQrImage>>* hud_qr{};
     const std::atomic<bool>* lan_available{};
+    HostHudController* hud_controller{};
 
     [[nodiscard]] bool valid() const noexcept;
 };
@@ -188,7 +190,9 @@ void publish_cast_program_snapshot(
     bool media_loaded,
     bool video_master_clock,
     double audio_clock_offset_seconds,
-    std::uint64_t video_timeline_revision);
+    std::uint64_t video_timeline_revision,
+    std::uint64_t hud_program_instance,
+    std::uint64_t hud_discontinuity_revision);
 void publish_cast_overlay_snapshot(
     CastSession& cast,
     const kirakara::show::StageOverlayState& stage_overlay,
@@ -196,7 +200,8 @@ void publish_cast_overlay_snapshot(
 void publish_cast_timeline_snapshot(
     CastSession& cast,
     double audio_clock_offset_seconds,
-    std::uint64_t video_timeline_revision);
+    std::uint64_t video_timeline_revision,
+    std::uint64_t hud_discontinuity_revision);
 void refresh_cast_render_configuration(CastSession& cast);
 void suspend_cast_video(CastSession& cast);
 void post_cast_worker(CastSession& cast, std::function<void()> operation);

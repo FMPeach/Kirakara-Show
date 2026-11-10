@@ -517,7 +517,10 @@ int wmain(int argc, wchar_t** argv) {
     expect(host != nullptr, "create ShowHost");
     bool test_hud{};
     for (int i = 9; i < argc; ++i) if (std::wstring_view(argv[i]) == L"--hud") test_hud = true;
-    ShowHostAudienceHudState hud{sizeof(hud), 1, SHOW_HOST_HUD_QR_ENABLED, 0, 1, L"192.168.1.2:7391", nullptr};
+    const ShowHostHudQueueItem upcoming[]{{L"下一首", L"歌手"}, {L"Second song", L"Artist"},
+        {L"第三首", L"歌手"}, {L"四首待播歌曲", L"歌手"}};
+    ShowHostAudienceHudState hud{sizeof(hud), 1, SHOW_HOST_HUD_QR_ENABLED | SHOW_HOST_HUD_QUEUE_ENABLED,
+        4, 1, L"192.168.1.2:7391", upcoming};
     if (test_hud) {
         const auto com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         const auto image = make_hud_test_image();
