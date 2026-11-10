@@ -470,6 +470,15 @@ SHOW_HOST_API bool show_host_set_stage_overlay_state(
 SHOW_HOST_API uint64_t show_host_get_stage_overlay_revision(
     ShowHostHandle handle);
 
+/// Set an App-owned still image for the empty Native Stage (including
+/// Preview) and Cast program. path is an absolute UTF-16 local file path;
+/// null/empty restores the plain background. The path is copied before return.
+/// true means the update was accepted; loading occurs on each output's owner
+/// thread and an unreadable image leaves the plain background in place.
+/// Calling again reloads the image, including when the path is unchanged.
+SHOW_HOST_API bool show_host_set_idle_background_image(
+    ShowHostHandle handle, const wchar_t* path);
+
 /// Query playback time (in seconds).
 SHOW_HOST_API double show_host_get_position(ShowHostHandle handle);
 SHOW_HOST_API double show_host_get_duration(ShowHostHandle handle);

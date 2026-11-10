@@ -127,6 +127,7 @@ LRESULT CALLBACK stage_proc(
     case WM_SIZE:
         if (host) {
             host->native_stage.force_stage_redraw = true;
+            PostMessageW(host->window, kHostIdleStageRefreshMessage, 0, 0);
             RECT rect{};
             GetClientRect(hwnd, &rect);
             resize_media_player_for_stage(*host, rect);
@@ -210,7 +211,20 @@ LRESULT CALLBACK stage_proc(
                 ? TRUE : FALSE;
         }) : FALSE;
     case kHostStageVisibleMessage:
-        if (host) set_stage_visible(*host, wparam != FALSE);
+        if (host) {
+            set_stage_visible(*host, wparam != FALSE);
+            PostMessageW(host->window, kHostIdleStageRefreshMessage, 0, 0);
+        }
+        return 0;
+    case kHostIdleStageRefreshMessage:
+        // A configured idle still gets one event-driven publication even
+        // before load() starts the normal render loop. Visible sinks retain
+        // that frame; no recurring timer or media clock is started here.
+        if (host && !host->render_loop_active
+                && host->native_stage.idle_background_source
+                && !has_ts_stage_output(*host)) {
+            render_unified_native_stage(*host);
+        }
         return 0;
     case kHostStageOverlayStateMessage:
         return host && lparam
@@ -218,10 +232,17 @@ LRESULT CALLBACK stage_proc(
                 *host, *reinterpret_cast<StageOverlayRequest*>(lparam))
                 ? TRUE : FALSE)
             : FALSE;
+    case kHostIdleBackgroundImageMessage:
+        return host && lparam
+            ? (handle_idle_background_image(
+                *host, *reinterpret_cast<const std::wstring*>(lparam))
+                ? TRUE : FALSE)
+            : FALSE;
     case kHostStageWindowRectMessage:
         if (host && lparam) {
             apply_stage_window_rect(
                 *host, *reinterpret_cast<StageWindowRectRequest*>(lparam));
+            PostMessageW(host->window, kHostIdleStageRefreshMessage, 0, 0);
         }
         return 0;
     case kHostStartCastStreamMessage:

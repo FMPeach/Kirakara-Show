@@ -32,6 +32,8 @@ constexpr UINT kHostStageDeviceMessage = WM_APP + 118;
 constexpr UINT kHostStageOverlayStateMessage = WM_APP + 119;
 constexpr UINT kCastMediaEndedMessage = WM_APP + 120;
 constexpr UINT kCastFatalErrorMessage = WM_APP + 121;
+constexpr UINT kHostIdleBackgroundImageMessage = WM_APP + 122;
+constexpr UINT kHostIdleStageRefreshMessage = WM_APP + 123;
 
 // ── Dimensions ───────────────────────────────────────────────────
 

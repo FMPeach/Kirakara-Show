@@ -34,3 +34,4 @@ constexpr double kCastDecodeAheadSeconds = 0.25;
 // Declarations for the definitions in host_commands.cpp
 
 void render_idle_frame(ShowHost& host);
+bool handle_idle_background_image(ShowHost& host, const std::wstring& path);

@@ -6,6 +6,21 @@
 
   // defined below render_idle_frame
 
+bool handle_idle_background_image(ShowHost& host, const std::wstring& path) {
+    auto source = std::make_shared<IdleBackgroundSource>();
+    source->path = path;
+    const auto& previous = host.native_stage.idle_background_source;
+    source->revision = previous ? previous->revision + 1 : 1;
+    host.native_stage.idle_background_source = source;
+    host.native_stage.force_stage_redraw = true;
+    // Publish only immutable configuration. This does not fence the Cast
+    // worker, replace a program snapshot, or reopen either decoder.
+    host.cast.idle_background_source.store(
+        std::move(source), std::memory_order_release);
+    PostMessageW(host.window, kHostIdleStageRefreshMessage, 0, 0);
+    return true;
+}
+
 void render_idle_frame(ShowHost& host) {
     if (!has_ts_stage_output(host)) {
         service_native_stage_program(host);

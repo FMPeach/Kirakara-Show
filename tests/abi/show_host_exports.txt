@@ -1,4 +1,4 @@
-# Exported C ABI of show_host (42 symbols).
+# Exported C ABI of show_host (43 symbols).
 # Regenerate with: tools/show_host_abi.ps1 -Dll <dll> -Baseline <file> -Update
 # The Flutter FFI contract must stay stable across internal refactors.
 show_host_create
@@ -31,6 +31,7 @@ show_host_seek
 show_host_set_audio_clock_offset
 show_host_set_audio_track
 show_host_set_cast_pipeline_trace_enabled
+show_host_set_idle_background_image
 show_host_set_key_semitones
 show_host_set_stage_d3d_device
 show_host_set_stage_overlay_state

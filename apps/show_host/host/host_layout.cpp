@@ -201,9 +201,9 @@ bool set_stage_visible(ShowHost& host, bool visible) {
     if (visible) {
         // A physical output lease may be acquired before the first program is
         // loaded. Paint the already-created top-level and surface HWNDs now;
-        // their class/background handlers produce deterministic black without
-        // starting the 60 Hz render loop. The swap-chain presenter takes over
-        // through the unchanged first-frame path after a successful load.
+        // their class/background handlers supply black until the queued idle
+        // image publication or the first media frame takes over. This leaves
+        // the normal 60 Hz render loop asleep before the first load.
         InvalidateRect(host.window, nullptr, TRUE);
         UpdateWindow(host.window);
         if (host.stage_surface_window) {

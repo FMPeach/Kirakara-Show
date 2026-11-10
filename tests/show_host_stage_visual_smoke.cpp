@@ -355,8 +355,8 @@ ShowHostStageVisualStats read_stats(
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
-    expect(argc == 5,
-        "usage: stage-visual-smoke video krl vocal accompaniment");
+    expect(argc == 5 || argc == 6,
+        "usage: stage-visual-smoke video krl vocal accompaniment [idle-image]");
 
     ShowHostStageVisualApi api{};
     api.struct_size = sizeof(api);
@@ -376,6 +376,10 @@ int wmain(int argc, wchar_t** argv) {
     expect(show_host_set_stage_d3d_device(
             host, reinterpret_cast<std::uintptr_t>(producer_device)),
         "select producer D3D11 device");
+    if (argc == 6) {
+        expect(show_host_set_idle_background_image(host, argv[5]),
+            "configure App-owned idle image");
+    }
 
     ShowHostStageVisualSource source{};
     expect(api.create_source(host, &source) == SHOW_HOST_STAGE_VISUAL_SUCCESS
@@ -460,6 +464,35 @@ int wmain(int argc, wchar_t** argv) {
                 > generation_before_reattach;
         }, 3s),
         "reattached Stage Visual source creates a fresh resource generation");
+
+    // The last item can be cut while Flutter still owns the current shared
+    // texture. The final static/idle frame must survive that brief stall.
+    consumer.hold_next_frame();
+    expect(consumer.wait_until_holding(2s),
+        "hold the preview frame before stopping the last song");
+    show_host_stop(host);
+    expect(pump_until([&] {
+            return show_host_get_state(host) == SHOW_STATE_STOPPED;
+        }, 2s), "stop last song before media EOF");
+    pump_for(200ms);
+    const auto callbacks_before_idle_recovery = consumer.callbacks();
+    consumer.release_held_frame();
+    expect(pump_until([&] {
+            return consumer.callbacks() > callbacks_before_idle_recovery;
+        }, 2s), "deliver the final idle frame after the preview consumer releases it");
+    pump_for(100ms);
+    ShowHostStageFrameStats idle_before{};
+    idle_before.struct_size = sizeof(idle_before);
+    expect(show_host_get_stage_frame_stats(host, &idle_before),
+        "read Stage counters after idle delivery");
+    const auto callbacks_after_idle = consumer.callbacks();
+    pump_for(200ms);
+    ShowHostStageFrameStats idle_after{};
+    idle_after.struct_size = sizeof(idle_after);
+    expect(show_host_get_stage_frame_stats(host, &idle_after)
+            && idle_after.produced_frames == idle_before.produced_frames
+            && consumer.callbacks() == callbacks_after_idle,
+        "delivered static idle frame does not create a redraw/publication pump");
 
     const auto final_stats = read_stats(api, source);
     expect(final_stats.published_frames >= consumer.acquired_frames()

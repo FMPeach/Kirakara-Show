@@ -2,6 +2,7 @@
 
 #include "../show_host_api.h"
 #include "../media/mf_d3d11_video_decoder.h"
+#include "../media/idle_background.h"
 #include "native_stage_frame_scheduler.h"
 #include "native_stage_pipeline_diagnostics.h"
 #include "native_stage_preview_load_policy.h"
@@ -43,6 +44,7 @@ enum class StagePreviewTransport : std::uint8_t {
 
 struct StageTextureSourceState {
     std::mutex mutex;
+    HWND owner_window{};
     StagePreviewTransport transport{StagePreviewTransport::flutter_external_texture};
     kirakara::show::StageFrameMailbox mailbox;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> publication_texture;
@@ -80,6 +82,8 @@ struct NativeStageSession {
     NativeStagePipelineDiagnostics pipeline_diagnostics;
     Microsoft::WRL::ComPtr<ID3D11Device> preferred_stage_device;
     kirakara::show::win32::UnifiedStageRenderer unified_stage_renderer;
+    IdleBackgroundTexture idle_background;
+    std::shared_ptr<const IdleBackgroundSource> idle_background_source;
     kirakara::show::win32::StageWindowPresenter unified_stage_presenter;
     kirakara::show::StageFrameMailbox native_stage_mailbox;
     kirakara::show::StageFrameLease native_last_stage_frame;

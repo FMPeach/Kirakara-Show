@@ -212,6 +212,13 @@ if(WIN32)
         PUBLIC Kirakara::Show
         PRIVATE d2d1 d3d11 dxgi dwrite windowscodecs ole32 uuid)
 
+    add_library(kirakara_show_host_idle_background STATIC
+        apps/show_host/media/idle_background.cpp)
+    target_compile_features(kirakara_show_host_idle_background PRIVATE cxx_std_20)
+    target_compile_definitions(kirakara_show_host_idle_background PRIVATE NOMINMAX)
+    target_link_libraries(kirakara_show_host_idle_background
+        PUBLIC Kirakara::ShowWin32 PRIVATE d3d11 windowscodecs ole32 uuid)
+
     add_executable(kirakara_show_demo WIN32 apps/win32_demo/main.cpp)
     target_compile_features(kirakara_show_demo PRIVATE cxx_std_20)
     target_link_libraries(kirakara_show_demo PRIVATE
@@ -474,7 +481,7 @@ if(WIN32)
         target_compile_definitions(kirakara_show_mf_d3d11_video_decoder_tests
             PRIVATE UNICODE _UNICODE NOMINMAX)
         target_link_libraries(kirakara_show_mf_d3d11_video_decoder_tests
-            PRIVATE Kirakara::ShowWin32 d3d11 mf mfplat mfreadwrite mfuuid
+            PRIVATE kirakara_show_host_idle_background d3d11 mf mfplat mfreadwrite mfuuid
                 ole32 shlwapi uuid)
         if(MINGW)
             target_link_options(kirakara_show_mf_d3d11_video_decoder_tests
@@ -495,7 +502,7 @@ if(WIN32)
         target_compile_definitions(kirakara_show_mf_h264_encoder_probe
             PRIVATE UNICODE _UNICODE NOMINMAX)
         target_link_libraries(kirakara_show_mf_h264_encoder_probe
-            PRIVATE Kirakara::ShowWin32 d3d11 mf mfplat mfreadwrite mfuuid
+            PRIVATE kirakara_show_host_idle_background d3d11 mf mfplat mfreadwrite mfuuid
                 ole32 uuid)
         if(MINGW)
             target_link_options(kirakara_show_mf_h264_encoder_probe
@@ -515,7 +522,7 @@ if(WIN32)
         target_compile_definitions(kirakara_show_mf_software_h264_encoder_tests
             PRIVATE UNICODE _UNICODE NOMINMAX)
         target_link_libraries(kirakara_show_mf_software_h264_encoder_tests
-            PRIVATE Kirakara::ShowWin32 d3d11 mf mfplat mfreadwrite mfuuid
+            PRIVATE kirakara_show_host_idle_background d3d11 mf mfplat mfreadwrite mfuuid
                 ole32 uuid)
         if(MINGW)
             target_link_options(kirakara_show_mf_software_h264_encoder_tests
@@ -617,7 +624,7 @@ if(WIN32)
             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party>
             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/signalsmith-stretch>)
     target_link_libraries(show_host PRIVATE
-        Kirakara::ShowWin32 d2d1 d3d11 dxgi dwrite mf mfplat mfreadwrite mfuuid
+        kirakara_show_host_idle_background d2d1 d3d11 dxgi dwrite mf mfplat mfreadwrite mfuuid
         advapi32 ole32 oleaut32 quartz shlwapi strmiids uuid winmm dsound
         ws2_32)
     if(MINGW)
@@ -692,6 +699,23 @@ if(WIN32)
             RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
         add_test(NAME kirakara_show_host_lifecycle_tests
             COMMAND kirakara_show_host_lifecycle_tests)
+
+        add_executable(kirakara_show_idle_background_tests
+            tests/idle_background_tests.cpp
+            apps/show_host/cast/cast_stage_renderer.cpp)
+        target_compile_features(kirakara_show_idle_background_tests PRIVATE cxx_std_20)
+        target_compile_definitions(kirakara_show_idle_background_tests
+            PRIVATE UNICODE _UNICODE NOMINMAX)
+        target_link_libraries(kirakara_show_idle_background_tests
+            PRIVATE show_host kirakara_show_host_idle_background d3d11 ole32)
+        if(MINGW)
+            target_link_options(kirakara_show_idle_background_tests
+                PRIVATE -municode -static -static-libgcc -static-libstdc++)
+        endif()
+        set_target_properties(kirakara_show_idle_background_tests PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+        add_test(NAME kirakara_show_idle_background_tests
+            COMMAND kirakara_show_idle_background_tests)
 
         # The exported symbol set is the Flutter FFI contract. Refactors that
         # move host code between translation units must not change it, so every

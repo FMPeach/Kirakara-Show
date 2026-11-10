@@ -1289,6 +1289,52 @@ static void render_cast_audio(CastExecutionContext& host,
     host.cast.audio_submitted_frames = target_frames;
 }
 
+static void refresh_cast_idle_background(CastSession& cast,
+        const kirakara::show::win32::StageCanvas& canvas) {
+    const auto source = cast.idle_background_source.load(
+        std::memory_order_acquire);
+    if (source == cast.nv12_background_source) return;
+    cast.nv12_background_source = source;
+    cast.nv12_background_frame.reset();
+    cast.nv12_background_pool.reset();
+    if (!source || source->path.empty()) return;
+
+    // Once per source revision/output configuration, never per transport
+    // frame. CPU conversion avoids adding a VP dependency to Cast A.
+    std::vector<std::uint8_t> pixels;
+    if (!load_idle_background_nv12(
+            source->path, canvas.width, canvas.height, pixels)) return;
+    auto* device = static_cast<ID3D11Device*>(
+        cast.stage_renderer.native_d3d_device());
+    CastNv12SurfacePoolConfig config;
+    config.width = canvas.width;
+    config.height = canvas.height;
+    config.capacity = 1;
+    config.create_plane_srvs = true;
+    config.create_plane_uavs = false;
+    config.video_processor_output = false;
+    config.encoder_compatible = false;
+    if (!cast.nv12_background_pool.configure(
+            device, config, &cast.pipeline_diagnostics)) return;
+    auto lease = cast.nv12_background_pool.try_acquire();
+    if (!lease) return;
+    Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
+    device->GetImmediateContext(&context);
+    if (!context) return;
+    context->UpdateSubresource(
+        static_cast<ID3D11Texture2D*>(lease.compose_texture()),
+        0, nullptr, pixels.data(), canvas.width,
+        static_cast<UINT>(pixels.size()));
+    if (FAILED(device->GetDeviceRemovedReason())) return;
+    auto format = cast.nv12_idle_frame->format();
+    format.video_primaries = MFVideoPrimaries_BT709;
+    format.transfer_function = MFVideoTransFunc_709;
+    format.yuv_matrix = MFVideoTransferMatrix_BT709;
+    format.nominal_range = MFNominalRange_16_235;
+    cast.nv12_background_frame = std::make_shared<CastNormalizedVideoFrame>(
+        std::move(lease), format, 0.0, 0.0, 0, source->revision);
+}
+
 static void render_cast_compute_nv12_frame(
         CastExecutionContext& host,
         const kirakara::show::win32::StageCanvas& canvas,
@@ -1328,8 +1374,15 @@ static void render_cast_compute_nv12_frame(
     if (hold_previous_program) {
         candidate = host.cast.last_nv12_frame;
     } else {
-        const auto base = normalized_video
-            ? normalized_video : host.cast.nv12_idle_frame;
+        const auto state = host.playback.state.load();
+        const bool idle = !host.playback.current_media.loaded
+            || state == SHOW_STATE_IDLE || state == SHOW_STATE_STOPPED;
+        if (!normalized_video && idle) {
+            refresh_cast_idle_background(host.cast, canvas);
+        }
+        const auto base = normalized_video ? normalized_video
+            : idle && host.cast.nv12_background_frame
+                ? host.cast.nv12_background_frame : host.cast.nv12_idle_frame;
         if (base) {
             static const kirakara::show::PreparedDocument empty_document;
             static const kirakara::show::SongTitleConfig empty_title;
@@ -1579,8 +1632,14 @@ void render_cast_frame(CastSession& cast) {
             || host.cast.lifecycle.program_ready_for(video_revision));
     bool composed_new_cast_frame = composed_video;
     if (!composed_video && !holding_last_complete_cast_frame) {
-        if (!cast_renderer.compose_idle_frame()) return;
-        composed_new_cast_frame = true;
+        const bool idle = !host.playback.current_media.loaded
+            || state == SHOW_STATE_IDLE || state == SHOW_STATE_STOPPED;
+        if (idle) {
+            cast_renderer.set_idle_background_source(
+                host.cast.idle_background_source.load(std::memory_order_acquire));
+        }
+        if (!cast_renderer.compose_idle_frame(idle)) return;
+        composed_new_cast_frame = !cast_renderer.idle_frame_reused();
     }
     const bool title_overlay_active = host.cast.title_renderer_ready
         && kirakara::show::song_title_has_drawable_content(
@@ -1592,6 +1651,8 @@ void render_cast_frame(CastSession& cast) {
         && !host.playback.document.lines.empty();
     if (!holding_last_complete_cast_frame
             && (title_overlay_active || lyric_overlay_active)) {
+        cast_renderer.invalidate_idle_frame();
+        composed_new_cast_frame = true;
         const auto overlay_started = CastPipelineDiagnostics::qpc_now();
         auto& surface = compositor.overlay_surface();
         const auto frame = compositor.current_frame();
@@ -1643,11 +1704,12 @@ void render_cast_frame(CastSession& cast) {
         && !holding_last_complete_cast_frame
         && !host.cast.lifecycle.program_ready_for(video_revision);
     const auto video_submitted = stage_texture && (
-        holding_last_complete_cast_frame
+        (holding_last_complete_cast_frame || !composed_new_cast_frame)
             ? host.cast.video_encoder.submit_repeated_texture(
                 stage_texture,
                 frame_time_100ns,
-                frame_duration_100ns)
+                frame_duration_100ns,
+                request_program_keyframe)
             : host.cast.video_encoder.submit_texture(
                 stage_texture,
                 frame_time_100ns,
@@ -1729,6 +1791,9 @@ CastVideoBufferSnapshot cast_buffer_snapshot(
 
 void reset_cast_nv12_pipeline(CastSession& cast) noexcept {
     cast.last_nv12_frame.reset();
+    cast.nv12_background_frame.reset();
+    cast.nv12_background_source.reset();
+    cast.nv12_background_pool.reset();
     cast.nv12_idle_frame.reset();
     cast.nv12_overlay_compositor.reset();
     cast.overlay_renderer.reset();

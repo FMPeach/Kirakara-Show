@@ -75,12 +75,16 @@ struct CastSession {
     kirakara::show::win32::LyricRenderer lyric_renderer;
     kirakara::show::win32::SongTitleRenderer title_renderer;
     CastStageRenderer stage_renderer;
+    std::atomic<std::shared_ptr<const IdleBackgroundSource>> idle_background_source;
     MfD3D11VideoDecoder video_decoder;
     CastVideoFrameNormalizer video_normalizer;
     CastOverlayRenderer overlay_renderer;
     D3D11Nv12OverlayCompositor nv12_overlay_compositor;
     CastNv12SurfacePool nv12_idle_pool;
     std::shared_ptr<const CastNormalizedVideoFrame> nv12_idle_frame;
+    CastNv12SurfacePool nv12_background_pool;
+    std::shared_ptr<const CastNormalizedVideoFrame> nv12_background_frame;
+    std::shared_ptr<const IdleBackgroundSource> nv12_background_source;
     std::shared_ptr<const D3D11Nv12CompositedFrame> last_nv12_frame;
     D3D11CastBackend active_backend{D3D11CastBackend::compatibility_c};
     bool title_renderer_ready{};

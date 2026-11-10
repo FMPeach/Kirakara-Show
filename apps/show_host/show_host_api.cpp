@@ -24,6 +24,7 @@
 #include <shellapi.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -128,6 +129,7 @@ int32_t create_stage_visual_source(
 
     auto state = std::make_shared<StageTextureSourceState>();
     state->transport = StagePreviewTransport::dcomp_visual_keyed_mutex;
+    state->owner_window = host->window;
     state->mailbox = host->native_stage.unified_stage_renderer.subscribe();
     {
         std::lock_guard lock(host->native_stage.stage_texture_sources_mutex);
@@ -184,6 +186,9 @@ void set_stage_visual_source_active(
     } else {
         (*holder)->callback_notification_pending =
             (*holder)->visual_callback != nullptr;
+        if ((*holder)->owner_window) {
+            PostMessageW((*holder)->owner_window, kHostIdleStageRefreshMessage, 0, 0);
+        }
     }
 }
 
@@ -208,6 +213,9 @@ void set_stage_visual_source_frame_callback(
     (*holder)->visual_notified_resource_generation = 0;
     (*holder)->callback_notification_pending = (*holder)->active
         && (*holder)->visual_callback != nullptr;
+    if ((*holder)->callback_notification_pending && (*holder)->owner_window) {
+        PostMessageW((*holder)->owner_window, kHostIdleStageRefreshMessage, 0, 0);
+    }
 }
 
 int32_t get_stage_visual_source_stats(
@@ -451,6 +459,7 @@ show_host_create_stage_texture_source(ShowHostHandle handle) {
     auto* host = as_host(handle);
     if (!host) return nullptr;
     auto state = std::make_shared<StageTextureSourceState>();
+    state->owner_window = host->window;
     state->mailbox = host->native_stage.unified_stage_renderer.subscribe();
     {
         std::lock_guard lock(host->native_stage.stage_texture_sources_mutex);
@@ -493,6 +502,9 @@ SHOW_HOST_API void show_host_stage_texture_source_set_active(
     } else {
         (*holder)->callback_notification_pending =
             (*holder)->callback != nullptr;
+        if ((*holder)->owner_window) {
+            PostMessageW((*holder)->owner_window, kHostIdleStageRefreshMessage, 0, 0);
+        }
     }
 }
 
@@ -508,6 +520,9 @@ SHOW_HOST_API void show_host_stage_texture_source_set_frame_callback(
     (*holder)->callback_context = (*holder)->callback ? user_data : nullptr;
     (*holder)->callback_notification_pending = (*holder)->active
         && (*holder)->callback != nullptr;
+    if ((*holder)->callback_notification_pending && (*holder)->owner_window) {
+        PostMessageW((*holder)->owner_window, kHostIdleStageRefreshMessage, 0, 0);
+    }
 }
 
 SHOW_HOST_API bool show_host_stage_texture_source_acquire(
@@ -809,6 +824,21 @@ SHOW_HOST_API std::uint64_t show_host_get_stage_overlay_revision(
     auto* host = as_host(handle);
     return host
         ? host->playback.stage_overlay_revision.load(std::memory_order_acquire) : 0;
+}
+
+SHOW_HOST_API bool show_host_set_idle_background_image(
+        ShowHostHandle handle, const wchar_t* path) {
+    auto* host = as_host(handle);
+    if (!host || !host->window) return false;
+    try {
+        const std::wstring request = path ? path : L"";
+        if (!request.empty()
+                && !std::filesystem::path(request).is_absolute()) return false;
+        return SendMessageW(host->window, kHostIdleBackgroundImageMessage, 0,
+            reinterpret_cast<LPARAM>(&request)) == TRUE;
+    } catch (...) {
+        return false;
+    }
 }
 
 SHOW_HOST_API double show_host_get_position(ShowHostHandle handle) {

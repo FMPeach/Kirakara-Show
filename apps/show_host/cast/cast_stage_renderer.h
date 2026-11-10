@@ -1,8 +1,10 @@
 #pragma once
 
 #include "kirakara/show/win32/stage_compositor.hpp"
+#include "../media/idle_background.h"
 
 #include <cstdint>
+#include <memory>
 
 // Offscreen renderer for the Cast flavor of the shared Stage program.
 // PlaybackSession owns time; the decoder owns source decoding; this class
@@ -14,7 +16,11 @@ public:
     [[nodiscard]] bool configure(
         const kirakara::show::win32::StageCanvas& canvas);
 
-    [[nodiscard]] bool compose_idle_frame();
+    [[nodiscard]] bool compose_idle_frame(bool show_background = true);
+    void set_idle_background_source(
+        std::shared_ptr<const IdleBackgroundSource> source);
+    [[nodiscard]] bool idle_frame_reused() const noexcept;
+    void invalidate_idle_frame() noexcept;
     [[nodiscard]] bool compose_video_texture(
         void* d3d11_texture_2d,
         std::uint32_t source_width,
@@ -31,4 +37,9 @@ public:
 
 private:
     kirakara::show::win32::StageCompositor compositor_;
+    IdleBackgroundTexture idle_background_;
+    std::shared_ptr<const IdleBackgroundSource> idle_background_source_;
+    bool idle_frame_cached_{};
+    bool idle_background_visible_{};
+    bool idle_frame_reused_{};
 };

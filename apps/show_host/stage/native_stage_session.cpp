@@ -328,7 +328,10 @@ void notify_stage_texture_sources(
             //         NativeStagePipelineCounter::preview_throttled_frames);
             //     continue;
             // }
-            auto frame = source->mailbox.take_latest();
+            // Keep the latest immutable frame pending until the consumer's
+            // shared texture can accept it. A busy keyed mutex must not lose
+            // the final static frame after stop/pause.
+            auto frame = source->mailbox.peek_latest();
             if (!frame) {
                 source->publication_cadence.reset();
                 continue;
@@ -338,6 +341,7 @@ void notify_stage_texture_sources(
                 source->publication_cadence.reset();
                 continue;
             }
+            static_cast<void>(source->mailbox.take_latest());
             callback = source->callback;
             visual_callback = source->visual_callback;
             context = source->callback_context;
@@ -406,6 +410,7 @@ void invalidate_stage_texture_sources(ShowHost& host) {
     for (const auto& source : live_stage_texture_sources(host)) {
         std::unique_lock lock(source->mutex);
         source->alive = false;
+        source->owner_window = nullptr;
         source->active = false;
         source->callback = nullptr;
         source->visual_callback = nullptr;
@@ -456,6 +461,7 @@ bool replace_unified_stage_renderer(ShowHost& host,
     // reconfiguring it in place would fail until Flutter asks for another
     // descriptor, creating a permanent no-new-frame cycle.
     host.native_stage.unified_stage_renderer.retire();
+    host.native_stage.idle_background.reset();
     host.native_stage.unified_stage_renderer = std::move(replacement);
     rebind_stage_texture_sources(host);
     return true;
@@ -473,6 +479,7 @@ void reset_unified_stage_device_pipeline(
     host.native_stage.decoded_frame_identity_valid = false;
     release_unified_native_stage_frames(host);
     host.native_stage.unified_stage_presenter.shutdown();
+    host.native_stage.idle_background.reset();
     host.native_stage.unified_stage_renderer.retire();
     host.native_stage.unified_stage_renderer =
         kirakara::show::win32::UnifiedStageRenderer{};
@@ -1066,6 +1073,28 @@ bool publish_unified_native_stage_frame(
     // latest immutable frame during scanout; it must not cause extra video
     // decode or lyric evaluation merely to match a 120/144 Hz monitor.
     constexpr std::int64_t frame_duration_100ns = 10000000LL / 60LL;
+    // The idle still belongs to the shared program frame, so Preview and the
+    // physical display receive identical pixels. Keep the original video
+    // argument for readiness/transition bookkeeping below: a still must never
+    // release the first-video-frame gate or become a held media frame.
+    auto* render_texture = video_texture;
+    auto render_width = video_width;
+    auto render_height = video_height;
+    const auto state = host.playback.state.load();
+    const bool idle = !video_texture
+        && (!host.playback.current_media.loaded
+            || state == SHOW_STATE_IDLE || state == SHOW_STATE_STOPPED);
+    if (idle && host.native_stage.idle_background_source) {
+        auto* device = static_cast<ID3D11Device*>(
+            host.native_stage.unified_stage_renderer.native_d3d_device());
+        if (host.native_stage.idle_background.configure(
+                device, profile.width, profile.height,
+                *host.native_stage.idle_background_source)) {
+            render_texture = host.native_stage.idle_background.texture();
+            render_width = profile.width;
+            render_height = profile.height;
+        }
+    }
     kirakara::show::win32::UnifiedStageRenderTimings render_timings{};
     const auto result = host.native_stage.unified_stage_renderer.render(
         kirakara::show::win32::UnifiedStageRenderRequest{
@@ -1077,9 +1106,9 @@ bool publish_unified_native_stage_frame(
                 frame_duration_100ns,
             },
             .project_time = stage_time,
-            .video_texture = video_texture,
-            .video_width = video_width,
-            .video_height = video_height,
+            .video_texture = render_texture,
+            .video_width = render_width,
+            .video_height = render_height,
             .video_identity = video_identity,
             .lyrics = draw_program_overlays ? &host.playback.document : nullptr,
             .config = draw_program_overlays ? &host.playback.config : nullptr,
@@ -1259,8 +1288,8 @@ void render_unified_native_stage(ShowHost& host) {
         // most recently committed pixels. Only drain a frame already waiting
         // for the Preview sink; do not copy/present the same Stage at 60 Hz
         // merely to keep a static picture visible.
-        if (native_window_output && texture_delivery.has_pending_frame) {
-            notify_stage_texture_sources(host, true);
+        if (texture_delivery.has_pending_frame) {
+            notify_stage_texture_sources(host, native_window_output);
         }
         host.native_stage.pipeline_diagnostics.increment(
             NativeStagePipelineCounter::static_frame_skips);

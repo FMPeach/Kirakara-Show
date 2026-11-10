@@ -147,6 +147,24 @@ show_host_stop_cast_stream(host);
 `show_host_set_stage_overlay_state()` 用于传入二维码、公告文字等大屏信息。当前版本已经提供状态
 接口，完整的 QR 与报幕绘制仍在开发中。
 
+## 10. 空闲背景
+
+宿主负责携带图片，在创建 ShowHost 后传入本地绝对路径：
+
+```c
+show_host_set_idle_background_image(host, absolute_image_path);
+```
+
+路径使用 UTF-16。图片等比缩放到输出画布，比例不同时保留黑边。空闲背景会出现在统一
+Stage 的主控预览、实体第二屏及 Cast 中。播放中的缓冲与无缝换歌继续保留原有画面。
+
+接口返回 `true` 表示路径更新已接收，输出线程随后加载图片并建立缓存。图片或输出尺寸变化
+时才重新处理；读取失败时保留普通底色。再次调用可刷新同一路径的文件，传入 `NULL` 或
+空字符串可清除背景。
+
+Kirakara-App 将图片打包到程序目录下的 `data/idle-background.png`，启动时把完整路径传给
+Show。其他宿主可以采用自己的资源目录，DLL 中不携带图片。
+
 ## DLL 路径
 
 Show 和 App 可以放在不同目录开发。构建 App 时，通过 App 仓库自己的配置指向已经生成的
