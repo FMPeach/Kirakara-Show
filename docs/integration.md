@@ -211,8 +211,9 @@ Wi-Fi 同时设置 `SHOW_HOST_HUD_NETWORK_WIFI` 标志，卡片会显示对应�
 `NULL`；函数返回后，Host 不再调用旧回调。Dart 可使用 `NativeCallable.listener` 接入这类
 低频事件，销毁前先解除订阅，再关闭 callable。
 
-Show 构建目录会生成与 DLL 同名的 `.LICENSES.txt`，其中汇总项目和内置组件的许可声明。
-随应用分发 DLL 时一并保留这份文件。
+Show 构建目录会生成与 DLL 同名的 `.LICENSES.txt`，汇总项目和内置组件的完整许可条款，供
+单独分发 DLL 时使用。宿主也可将这些条款收录到自己的第三方许可证页；组件链接见
+[第三方声明](../THIRD_PARTY_NOTICES.md)。
 
 旧的 `show_host_set_stage_overlay_state()` 继续接收原有元数据。接入新卡片时使用上述独立入口。
 
