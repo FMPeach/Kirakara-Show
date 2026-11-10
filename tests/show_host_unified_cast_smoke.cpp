@@ -520,7 +520,7 @@ int wmain(int argc, wchar_t** argv) {
     const ShowHostHudQueueItem upcoming[]{{L"下一首", L"歌手"}, {L"Second song", L"Artist"},
         {L"第三首", L"歌手"}, {L"四首待播歌曲", L"歌手"}};
     ShowHostAudienceHudState hud{sizeof(hud), 1, SHOW_HOST_HUD_QR_ENABLED | SHOW_HOST_HUD_QUEUE_ENABLED,
-        4, 1, L"192.168.1.2:7391", upcoming};
+        4, 1, L"测试网络", upcoming, L"当前播放", L"当前歌手"};
     if (test_hud) {
         const auto com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         const auto image = make_hud_test_image();

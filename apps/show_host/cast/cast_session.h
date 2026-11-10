@@ -65,6 +65,7 @@ struct CastProgramBindings {
     const std::atomic<std::shared_ptr<const HostHudQrImage>>* hud_qr{};
     const std::atomic<bool>* lan_available{};
     HostHudController* hud_controller{};
+    const std::atomic<std::uint64_t>* lan_revision{};
 
     [[nodiscard]] bool valid() const noexcept;
 };

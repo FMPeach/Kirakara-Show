@@ -17,10 +17,12 @@ struct HostHudRuntime {
     PhysicalHudOutput physical_output;
     HostHudController controller;
     std::atomic<std::uint64_t> program_instance{}, discontinuity_revision{};
+    std::atomic<bool> refresh_pending{};
     ShowHostLanStateCallback callback{};
     void* callback_context{};
 };
 struct HostHudCallbackRequest { ShowHostLanStateCallback callback{}; void* context{}; };
 void refresh_host_lan_state(ShowHost& host);
+void request_host_hud_refresh(ShowHost& host);
 void render_physical_hud(ShowHost& host);
 void release_physical_hud(ShowHost& host);

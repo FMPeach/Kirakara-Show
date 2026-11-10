@@ -228,15 +228,9 @@ LRESULT CALLBACK stage_proc(
         if (host) render_physical_hud(*host);
         return 0;
     case kHostHudStateMessage:
-        if (!host || !lparam) return FALSE;
-        host->hud.state.store(
-            *reinterpret_cast<std::shared_ptr<const HostHudState>*>(lparam));
-        render_physical_hud(*host);
-        return TRUE;
     case kHostHudQrMessage:
-        if (!host || !lparam) return FALSE;
-        host->hud.qr.store(
-            *reinterpret_cast<std::shared_ptr<const HostHudQrImage>*>(lparam));
+        if (!host) return FALSE;
+        host->hud.refresh_pending.store(false);
         render_physical_hud(*host);
         return TRUE;
     case kHostLanChangedMessage:

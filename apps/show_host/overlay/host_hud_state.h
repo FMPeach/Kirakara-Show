@@ -22,6 +22,9 @@ struct HostHudOptions {
 // image so the renderer can choose an integral scale without encoding a QR.
 struct HostHudQrImage {
     std::uint64_t revision{};
+    // Stamped by Host on receipt; a network event requires App to confirm
+    // its current shared image before the card is shown again.
+    std::uint64_t network_revision{};
     std::uint32_t pixel_size{};
     std::uint32_t modules{};
     std::vector<std::uint8_t> png;
@@ -45,10 +48,13 @@ struct HostHudState {
     HostHudOptions options;
     std::shared_ptr<const HostHudQrImage> qr;
     std::wstring network_name;
+    bool network_wifi{};
     std::vector<HostHudQueueItem> queue;
+    HostHudQueueItem current;
 
     [[nodiscard]] bool valid() const noexcept {
         if ((qr && !qr->valid()) || network_name.size() > kHostHudMaxTextUnits
+                || current.title.size() > kHostHudMaxTextUnits || current.artist.size() > kHostHudMaxTextUnits
                 || queue.size() > kHostHudMaxQueueItems) return false;
         for (const auto& item : queue) {
             if (item.title.size() > kHostHudMaxTextUnits

@@ -1,0 +1,4 @@
+#pragma once
+inline constexpr char kHudWifiSvg[] = R"kirakara_svg(@KIRAKARA_HUD_WIFI_SVG@)kirakara_svg";
+inline constexpr char kHudPhoneSvg[] = R"kirakara_svg(@KIRAKARA_HUD_PHONE_SVG@)kirakara_svg";
+inline constexpr char kHudEthernetSvg[] = R"kirakara_svg(@KIRAKARA_HUD_ETHERNET_SVG@)kirakara_svg";

@@ -230,8 +230,21 @@ if(WIN32)
         apps/show_host/overlay/host_hud_renderer.cpp
         apps/show_host/overlay/host_hud_controller.cpp
         apps/show_host/overlay/host_hud_blitter.cpp
+        apps/show_host/overlay/host_hud_svg_icons.cpp
         apps/show_host/overlay/lan_state_monitor.cpp)
     target_compile_features(kirakara_show_host_hud PRIVATE cxx_std_20)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/lucide/wifi.svg"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/lucide/smartphone.svg"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/lucide/ethernet-port.svg")
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/third_party/lucide/wifi.svg" KIRAKARA_HUD_WIFI_SVG)
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/third_party/lucide/smartphone.svg" KIRAKARA_HUD_PHONE_SVG)
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/third_party/lucide/ethernet-port.svg" KIRAKARA_HUD_ETHERNET_SVG)
+    foreach(_svg KIRAKARA_HUD_WIFI_SVG KIRAKARA_HUD_PHONE_SVG KIRAKARA_HUD_ETHERNET_SVG)
+        string(REPLACE "currentColor" "#f8fafc" ${_svg} "${${_svg}}")
+    endforeach()
+    configure_file(apps/show_host/overlay/hud_svg_data.h.in generated/hud_svg_data.h @ONLY)
+    target_include_directories(kirakara_show_host_hud PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
     target_compile_definitions(kirakara_show_host_hud PRIVATE NOMINMAX)
     target_link_libraries(kirakara_show_host_hud
         PUBLIC Kirakara::ShowWin32 PRIVATE dcomp d3d11 dxgi dwrite windowscodecs iphlpapi ws2_32 ole32 uuid)
@@ -664,6 +677,19 @@ if(WIN32)
     endif()
     set_target_properties(show_host PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+    set(_show_distribution_notices "")
+    foreach(_notice IN ITEMS LICENSE THIRD_PARTY_NOTICES.md
+            third_party/signalsmith-stretch/LICENSE.txt
+            third_party/signalsmith-linear/LICENSE.txt
+            third_party/lucide/LICENSE.txt)
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/${_notice}")
+        file(READ "${CMAKE_CURRENT_SOURCE_DIR}/${_notice}" _notice_text)
+        string(APPEND _show_distribution_notices "\n=== ${_notice} ===\n${_notice_text}\n")
+    endforeach()
+    file(GENERATE OUTPUT "$<TARGET_FILE:show_host>.LICENSES.txt"
+        CONTENT "${_show_distribution_notices}")
 
     if(KIRAKARA_BUILD_TESTS)
         add_executable(kirakara_show_unified_cast_smoke

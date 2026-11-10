@@ -107,7 +107,8 @@ void* active_cast_stage_texture(CastSession& cast) {
 static const HostHudFrame& render_cast_hud(CastSession& cast, const CastProgramSnapshot& snapshot) {
     const auto state = cast.program.hud_state ? cast.program.hud_state->load() : nullptr;
     const auto qr = cast.program.hud_qr ? cast.program.hud_qr->load() : nullptr;
-    const bool lan = cast.program.lan_available && cast.program.lan_available->load();
+    const bool lan = cast.program.lan_available && cast.program.lan_available->load()
+        && qr && cast.program.lan_revision && qr->network_revision == cast.program.lan_revision->load();
     const auto canvas = active_cast_canvas(cast);
     const auto* program = &snapshot;
     HostHudPresentation presentation;

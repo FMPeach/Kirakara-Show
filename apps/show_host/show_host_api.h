@@ -22,6 +22,7 @@ enum {
     SHOW_HOST_HUD_QR_ENABLED = 1,
     SHOW_HOST_HUD_QUEUE_ENABLED = 2,
     SHOW_HOST_HUD_ANNOUNCEMENT_ENABLED = 4,
+    SHOW_HOST_HUD_NETWORK_WIFI = 8,
 };
 typedef struct ShowHostHudQueueItem {
     const wchar_t* title;
@@ -31,10 +32,13 @@ typedef struct ShowHostAudienceHudState {
     uint32_t struct_size;
     uint32_t abi_version;
     uint32_t flags;
-    uint32_t queue_count;
+    uint32_t queue_count; // Upcoming songs only, up to four.
     uint64_t revision;
     const wchar_t* network_name;
     const ShowHostHudQueueItem* queue;
+    // Optional trailing fields; the original prefix size remains accepted.
+    const wchar_t* current_title;
+    const wchar_t* current_artist;
 } ShowHostAudienceHudState;
 typedef struct ShowHostPhoneOrderQrImage {
     uint32_t struct_size;

@@ -257,8 +257,9 @@ SHOW_HOST_API bool show_host_set_audience_hud_state(ShowHostHandle handle,
         const ShowHostAudienceHudState* input) {
     auto* host = as_host(handle);
     if (!host || !host->window || !input
-            || input->struct_size != sizeof(*input)
-            || input->abi_version != kHostHudAbiVersion || (input->flags & ~7U)
+            || (input->struct_size != sizeof(*input)
+                && input->struct_size != offsetof(ShowHostAudienceHudState, current_title))
+            || input->abi_version != kHostHudAbiVersion || (input->flags & ~15U)
             || input->queue_count > kHostHudMaxQueueItems
             || (input->queue_count && !input->queue)) return false;
     try {
@@ -272,15 +273,19 @@ SHOW_HOST_API bool show_host_set_audience_hud_state(ShowHostHandle handle,
         };
         state->revision = input->revision;
         state->options = {(input->flags & 1U) != 0, (input->flags & 2U) != 0, (input->flags & 4U) != 0};
+        state->network_wifi = (input->flags & SHOW_HOST_HUD_NETWORK_WIFI) != 0;
         if (!copy_text(input->network_name, state->network_name)) return false;
+        if (input->struct_size == sizeof(*input)
+                && (!copy_text(input->current_title, state->current.title)
+                    || !copy_text(input->current_artist, state->current.artist))) return false;
         state->queue.resize(input->queue_count);
         for (std::size_t i = 0; i < state->queue.size(); ++i) {
             if (!copy_text(input->queue[i].title, state->queue[i].title)
                     || !copy_text(input->queue[i].artist, state->queue[i].artist)) return false;
         }
-        std::shared_ptr<const HostHudState> value = std::move(state);
-        return SendMessageW(host->window, kHostHudStateMessage, 0,
-            reinterpret_cast<LPARAM>(&value)) != FALSE;
+        host->hud.state.store(std::move(state));
+        request_host_hud_refresh(*host);
+        return true;
     } catch (...) { return false; }
 }
 
@@ -289,7 +294,7 @@ SHOW_HOST_API bool show_host_set_phone_order_qr_image(ShowHostHandle handle,
     auto* host = as_host(handle);
     if (!host || !host->window) return false;
     try {
-        std::shared_ptr<const HostHudQrImage> value;
+        std::shared_ptr<HostHudQrImage> value;
         if (input) {
             static constexpr unsigned char signature[]{137, 80, 78, 71, 13, 10, 26, 10};
             if (input->struct_size != sizeof(*input) || input->abi_version != kHostHudAbiVersion
@@ -301,15 +306,20 @@ SHOW_HOST_API bool show_host_set_phone_order_qr_image(ShowHostHandle handle,
                     || std::memcmp(input->png, signature, sizeof(signature)) != 0) return false;
             const auto previous = host->hud.qr.load();
             if (previous && previous->revision == input->revision
-                    && previous->pixel_size == input->pixel_size && previous->modules == input->modules) return true;
-            auto image = std::make_shared<HostHudQrImage>();
-            image->revision = input->revision; image->pixel_size = input->pixel_size;
-            image->modules = input->modules;
-            image->png.assign(input->png, input->png + input->png_size);
-            value = std::move(image);
+                    && previous->pixel_size == input->pixel_size && previous->modules == input->modules) {
+                if (previous->network_revision == host->hud.lan_revision.load()) return true;
+                value = std::make_shared<HostHudQrImage>(*previous);
+            } else {
+                value = std::make_shared<HostHudQrImage>();
+                value->revision = input->revision; value->pixel_size = input->pixel_size;
+                value->modules = input->modules;
+                value->png.assign(input->png, input->png + input->png_size);
+            }
         }
-        return SendMessageW(host->window, kHostHudQrMessage, 0,
-            reinterpret_cast<LPARAM>(&value)) != FALSE;
+        if (value) value->network_revision = host->hud.lan_revision.load();
+        host->hud.qr.store(std::move(value));
+        request_host_hud_refresh(*host);
+        return true;
     } catch (...) { return false; }
 }
 

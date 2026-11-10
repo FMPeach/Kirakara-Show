@@ -59,7 +59,7 @@ bool LanStateMonitor::usable_adapter(std::wstring_view name, std::uint32_t type,
     for (const auto token : excluded) if (lower.find(token) != std::wstring::npos) return false;
     return true;
 }
-bool LanStateMonitor::refresh() {
+std::optional<bool> LanStateMonitor::refresh() {
     impl_->pending.store(false);
     ULONG size = 16 * 1024;
     std::vector<unsigned char> bytes(size);
@@ -74,7 +74,8 @@ bool LanStateMonitor::refresh() {
             GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
             nullptr, adapters, &size);
     }
-    if (result != NO_ERROR) return false;
+    if (result == ERROR_NO_DATA) return false;
+    if (result != NO_ERROR) return std::nullopt;
     for (auto* adapter = adapters; adapter; adapter = adapter->Next) {
         if (!usable_adapter(adapter->FriendlyName ? adapter->FriendlyName : L"",
                 adapter->IfType, adapter->OperStatus == IfOperStatusUp)) continue;

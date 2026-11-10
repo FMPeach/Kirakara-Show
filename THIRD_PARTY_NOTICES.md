@@ -20,3 +20,11 @@ Kirakara Show 自有代码使用仓库根目录中的 MIT License。以下随源
 - Local license: [third_party/signalsmith-linear/LICENSE.txt](third_party/signalsmith-linear/LICENSE.txt)
 
 第三方许可证原文以各组件目录中的 `LICENSE.txt` 为准。
+
+## Lucide icons
+
+- Project: Lucide
+- Upstream: <https://github.com/lucide-icons/lucide>
+- Copyright: Copyright (c) 2026 Lucide Icons and Contributors
+- License: ISC；Feather 衍生的 `smartphone` 图标另保留 MIT 声明
+- Local license: [third_party/lucide/LICENSE.txt](third_party/lucide/LICENSE.txt)

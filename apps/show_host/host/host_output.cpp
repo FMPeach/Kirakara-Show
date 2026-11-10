@@ -16,7 +16,7 @@ CastProgramBindings cast_program_bindings(ShowHost& host) {
         &host.playback.duration,
         &host.playback.video_buffering,
         &host.playback.video_buffering_position,
-        host.window, &host.hud.state, &host.hud.qr, &host.hud.lan_available, &host.hud.controller};
+        host.window, &host.hud.state, &host.hud.qr, &host.hud.lan_available, &host.hud.controller, &host.hud.lan_revision};
 }
 
 void publish_current_cast_program(ShowHost& host) {

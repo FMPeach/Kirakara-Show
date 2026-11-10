@@ -1,11 +1,19 @@
 #include "host_hud.h"
 #include "../host/host_data.h"
 
+void request_host_hud_refresh(ShowHost& host) {
+    if (!host.hud.refresh_pending.exchange(true)
+            && !PostMessageW(host.window, kHostHudStateMessage, 0, 0)) {
+        host.hud.refresh_pending.store(false);
+    }
+}
+
 void refresh_host_lan_state(ShowHost& host) {
-    const bool available = host.hud.network.refresh();
-    host.hud.lan_available.store(available, std::memory_order_release);
+    const auto available = host.hud.network.refresh();
+    if (!available) return; // Keep the last known state after an OS query error.
+    host.hud.lan_available.store(*available, std::memory_order_release);
     const auto revision = host.hud.lan_revision.fetch_add(1, std::memory_order_acq_rel) + 1;
-    if (host.hud.callback) host.hud.callback(host.hud.callback_context, revision, available);
+    if (host.hud.callback) host.hud.callback(host.hud.callback_context, revision, *available);
     render_physical_hud(host);
 }
 void render_physical_hud(ShowHost& host) {
@@ -32,7 +40,8 @@ void render_physical_hud(ShowHost& host) {
     const auto state = host.hud.state.load();
     const auto qr = host.hud.qr.load();
     const auto& frame = host.hud.physical_renderer.render(device,
-        profile.width, profile.height, state.get(), qr, host.hud.lan_available.load(), presentation);
+        profile.width, profile.height, state.get(), qr,
+        host.hud.lan_available.load() && qr && qr->network_revision == host.hud.lan_revision.load(), presentation);
     if (!frame.visible) {
         static_cast<void>(host.hud.physical_output.set_visible(false));
         return;
