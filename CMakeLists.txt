@@ -219,6 +219,13 @@ if(WIN32)
     target_link_libraries(kirakara_show_host_idle_background
         PUBLIC Kirakara::ShowWin32 PRIVATE d3d11 windowscodecs ole32 uuid)
 
+    add_library(kirakara_show_host_hud STATIC
+        apps/show_host/overlay/physical_hud_output.cpp)
+    target_compile_features(kirakara_show_host_hud PRIVATE cxx_std_20)
+    target_compile_definitions(kirakara_show_host_hud PRIVATE NOMINMAX)
+    target_link_libraries(kirakara_show_host_hud
+        PUBLIC Kirakara::ShowWin32 PRIVATE dcomp d3d11 dxgi ole32 uuid)
+
     add_executable(kirakara_show_demo WIN32 apps/win32_demo/main.cpp)
     target_compile_features(kirakara_show_demo PRIVATE cxx_std_20)
     target_link_libraries(kirakara_show_demo PRIVATE
@@ -246,6 +253,19 @@ if(WIN32)
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
     if(KIRAKARA_BUILD_TESTS)
+        add_executable(kirakara_show_physical_hud_output_tests
+            tests/physical_hud_output_tests.cpp)
+        target_compile_features(kirakara_show_physical_hud_output_tests PRIVATE cxx_std_20)
+        target_compile_definitions(kirakara_show_physical_hud_output_tests PRIVATE NOMINMAX)
+        target_link_libraries(kirakara_show_physical_hud_output_tests
+            PRIVATE kirakara_show_host_hud dcomp d3d11 dxgi ole32)
+        if(MINGW)
+            target_link_options(kirakara_show_physical_hud_output_tests
+                PRIVATE -static -static-libgcc -static-libstdc++)
+        endif()
+        add_test(NAME kirakara_show_physical_hud_output_tests
+            COMMAND kirakara_show_physical_hud_output_tests)
+
         add_executable(kirakara_show_d3d11_cast_capabilities_probe
             tests/d3d11_cast_capabilities_probe.cpp
             apps/show_host/cast/d3d11_cast_capabilities.cpp)

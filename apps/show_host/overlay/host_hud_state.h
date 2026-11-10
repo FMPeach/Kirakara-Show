@@ -1,0 +1,58 @@
+#pragma once
+
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
+
+inline constexpr std::uint32_t kHostHudAbiVersion = 1;
+inline constexpr std::size_t kHostHudMaxQrBytes = 4U * 1024U * 1024U;
+inline constexpr std::uint32_t kHostHudMaxQrPixels = 2048;
+inline constexpr std::uint32_t kHostHudMaxQrModules = 185;
+inline constexpr std::size_t kHostHudMaxQueueItems = 4;
+inline constexpr std::size_t kHostHudMaxTextUnits = 512;
+
+struct HostHudOptions {
+    bool qr_enabled{};
+    bool queue_enabled{};
+    bool announcement_enabled{};
+};
+
+// An App-produced PNG, including its quiet zone. modules describes the whole
+// image so the renderer can choose an integral scale without encoding a QR.
+struct HostHudQrImage {
+    std::uint64_t revision{};
+    std::uint32_t pixel_size{};
+    std::uint32_t modules{};
+    std::vector<std::uint8_t> png;
+
+    [[nodiscard]] bool valid() const noexcept {
+        return revision != 0 && pixel_size > 0
+            && pixel_size <= kHostHudMaxQrPixels && modules > 0
+            && modules <= kHostHudMaxQrModules && pixel_size % modules == 0
+            && !png.empty() && png.size() <= kHostHudMaxQrBytes;
+    }
+};
+
+struct HostHudQueueItem {
+    std::wstring title;
+    std::wstring artist;
+};
+
+struct HostHudState {
+    std::uint64_t revision{};
+    HostHudOptions options;
+    std::shared_ptr<const HostHudQrImage> qr;
+    std::wstring network_name;
+    std::vector<HostHudQueueItem> queue;
+
+    [[nodiscard]] bool valid() const noexcept {
+        if ((qr && !qr->valid()) || network_name.size() > kHostHudMaxTextUnits
+                || queue.size() > kHostHudMaxQueueItems) return false;
+        for (const auto& item : queue) {
+            if (item.title.size() > kHostHudMaxTextUnits
+                    || item.artist.size() > kHostHudMaxTextUnits) return false;
+        }
+        return true;
+    }
+};
