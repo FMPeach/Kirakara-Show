@@ -1,6 +1,18 @@
 #include "host_hud.h"
 #include "../host/host_data.h"
 
+namespace {
+void set_animation_timer(ShowHost& host, bool enabled) {
+    if (host.hud.animation_timer_active == enabled) return;
+    if (enabled) {
+        host.hud.animation_timer_active = SetTimer(host.window, kHostHudAnimationTimer, 16, nullptr) != 0;
+    } else {
+        KillTimer(host.window, kHostHudAnimationTimer);
+        host.hud.animation_timer_active = false;
+    }
+}
+}
+
 void request_host_hud_refresh(ShowHost& host) {
     if (!host.hud.refresh_pending.exchange(true)
             && !PostMessageW(host.window, kHostHudStateMessage, 0, 0)) {
@@ -18,6 +30,7 @@ void refresh_host_lan_state(ShowHost& host) {
 }
 void render_physical_hud(ShowHost& host) {
     if (has_ts_stage_output(host)) {
+        set_animation_timer(host, false);
         static_cast<void>(host.hud.physical_output.set_visible(false));
         return;
     }
@@ -32,6 +45,7 @@ void render_physical_hud(ShowHost& host) {
         host.playback.position.load(), host.playback.duration.load(), now, active, advancing,
         host.native_stage.stage_program_ready || (active && host.playback.current_media.video.empty() && advancing)});
     if (!has_physical_stage_output(host)) {
+        set_animation_timer(host, false);
         static_cast<void>(host.hud.physical_output.set_visible(false));
         return;
     }
@@ -42,16 +56,20 @@ void render_physical_hud(ShowHost& host) {
     const auto& frame = host.hud.physical_renderer.render(device,
         profile.width, profile.height, state.get(), qr,
         host.hud.lan_available.load() && qr && qr->network_revision == host.hud.lan_revision.load(), presentation);
+    // Native playback already has a cadence. Only a short idle/paused fade
+    // needs this HUD-only wake-up; it never renders a clean Stage frame.
+    set_animation_timer(host, frame.animating && !host.render_loop_active);
     if (!frame.visible) {
         static_cast<void>(host.hud.physical_output.set_visible(false));
         return;
     }
     if (host.hud.physical_output.initialize(host.stage_surface_window, device)) {
         static_cast<void>(host.hud.physical_output.present(frame.texture, static_cast<float>(frame.x),
-            static_cast<float>(frame.y), frame.revision));
+            static_cast<float>(frame.y), frame.revision, frame.opacity));
     }
 }
 void release_physical_hud(ShowHost& host) {
+    set_animation_timer(host, false);
     host.hud.physical_output.shutdown();
     host.hud.physical_renderer.reset();
 }

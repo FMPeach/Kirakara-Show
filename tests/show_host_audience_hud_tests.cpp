@@ -3,6 +3,7 @@
 #include "../apps/show_host/overlay/host_hud_blitter.h"
 #include "../apps/show_host/overlay/host_hud_svg_icons.h"
 #include <cstdlib>
+#include <cmath>
 #include <iostream>
 #include <filesystem>
 
@@ -10,6 +11,15 @@ namespace {
 void expect(bool value, const char* message) {
     if (value) return;
     std::cerr << "FAIL: " << message << '\n'; std::exit(EXIT_FAILURE);
+}
+std::vector<std::uint8_t> read_card(const HostHudFrame& card, void* device) {
+    kirakara::show::win32::D3D11TextureSurface copy;
+    expect(copy.resize_on_device(device, card.width, card.height), "card readback target");
+    Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
+    static_cast<ID3D11Device*>(device)->GetImmediateContext(&context);
+    context->CopyResource(static_cast<ID3D11Texture2D*>(copy.native_texture()),
+        static_cast<ID3D11Texture2D*>(card.texture));
+    return copy.read_rgba8();
 }
 void save_card(const std::filesystem::path& path, const HostHudFrame& card, void* device) {
     using Microsoft::WRL::ComPtr;
@@ -60,6 +70,32 @@ int main(int argc, char** argv) {
         auto frame = renderer.render(device.native_d3d_device(), 1920, 1080, &state, image, true);
         expect(frame.visible && frame.width == 500 && frame.height == 244
             && frame.x == 1370 && frame.y == 40, "1080p card geometry");
+        const auto qr_pixels = read_card(frame, device.native_d3d_device());
+        const auto white = [&](int x, int y) {
+            const auto i = (y * 500 + x) * 4;
+            return qr_pixels[i] == 255 && qr_pixels[i + 1] == 255
+                && qr_pixels[i + 2] == 255 && qr_pixels[i + 3] == 255;
+        };
+        expect(!white(33, 100) && !white(35, 35) && white(122, 34),
+            "no extra white border and rounded PNG corners");
+        expect(!white(122, 33) && white(122, 34) && white(122, 209) && !white(122, 210),
+            "slightly enlarged white block preserves its center");
+        const auto base = (225 * 500 + 300) * 4;
+        const auto above_network_bottom = (199 * 500 + 360) * 4;
+        const auto below_network_bottom = (211 * 500 + 360) * 4;
+        expect(qr_pixels[above_network_bottom] != qr_pixels[base]
+            && std::equal(qr_pixels.begin() + below_network_bottom,
+                qr_pixels.begin() + below_network_bottom + 4, qr_pixels.begin() + base),
+            "right-column text, icons and network card retain their group alignment");
+        for (int y = 4; y < 29; ++y) for (int x = 4; x < 29; ++x) {
+            const auto px = 34 + static_cast<int>((x + .5F) * 176 / 33);
+            const auto py = 34 + static_cast<int>((y + .5F) * 176 / 33);
+            const auto i = (py * 500 + px) * 4;
+            const auto expected = (x + y) % 2 ? 0 : 255;
+            expect(qr_pixels[i] == expected && qr_pixels[i + 1] == expected
+                && qr_pixels[i + 2] == expected && qr_pixels[i + 3] == 255,
+                "rounded clipping preserves every QR body module");
+        }
         if (argc > 1) {
             std::filesystem::create_directories(argv[1]);
             save_card(std::filesystem::path(argv[1]) / "qr-card.png", frame, device.native_d3d_device());
@@ -89,6 +125,13 @@ int main(int argc, char** argv) {
             for (int i = 0; i < 100; ++i) expect(layer.apply(target.native_render_target(), card, false, changed)
                 && !changed, "retained C frame skips all drawing");
             expect(layer.captures() == 1, "only one bounded underlay capture");
+            const auto full_opacity = target.read_rgba8();
+            card.opacity = .5F;
+            expect(layer.apply(target.native_render_target(), card, false, changed) && changed
+                && target.read_rgba8() != full_opacity && layer.captures() == 1,
+                "Cast C fades against its original bounded underlay without recapture");
+            expect(layer.apply(target.native_render_target(), card, false, changed) && !changed,
+                "constant partial opacity remains static");
             card.visible = false;
             expect(layer.apply(target.native_render_target(), card, false, changed) && changed,
                 "offline removes card from held frame");
@@ -98,6 +141,19 @@ int main(int argc, char** argv) {
             const auto& scaled = renderer.render(device.native_d3d_device(), size.first, size.second, &state, image, true);
             expect(scaled.visible && scaled.x + scaled.width <= size.first
                 && scaled.y + scaled.height <= size.second, "bounded output scaling");
+            const auto pixels = read_card(scaled, device.native_d3d_device());
+            const auto scale = std::min(size.first / 1920.0F, size.second / 1080.0F);
+            const auto side = std::round(176 * scale);
+            const auto module = side / 33;
+            const auto left = std::round(122 * scale - side / 2);
+            const auto top = left;
+            for (int y = 4; y < 29; ++y) for (int x = 4; x < 29; ++x) {
+                const auto px = static_cast<std::size_t>(left + (x + .5F) * module);
+                const auto py = static_cast<std::size_t>(top + (y + .5F) * module);
+                const auto i = (py * scaled.width + px) * 4;
+                expect(pixels[i] == ((x + y) % 2 ? 0 : 255) && pixels[i + 3] == 255,
+                    "scaled QR keeps all body modules inside its rounded clip");
+            }
         }
         auto corrupt = std::make_shared<HostHudQrImage>(*image); corrupt->pixel_size = 165;
         expect(!renderer.render(device.native_d3d_device(), 1920, 1080, &state, corrupt, true).visible,
@@ -139,6 +195,53 @@ int main(int argc, char** argv) {
         state.queue.clear();
         expect(renderer.render(device.native_d3d_device(), 1920, 1080, &state, {}, false, queue_phase).visible,
             "empty queue has its own prompt");
+
+        {
+            HostHudRenderer animated;
+            HostHudState content;
+            content.options = {true, true, false};
+            content.current = {L"当前", L"歌手"};
+            content.queue = {{L"一", L""}, {L"二", L""}, {L"三", L""}, {L"四", L""}};
+            HostHudPresentation phase{false, 0, 1, 0, true};
+            animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
+            phase.monotonic_seconds = .15;
+            auto card = animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
+            expect(card.visible && !card.animating && animated.rasterizations() == 1, "initial fade reuses one QR card");
+            const auto qr_revision = card.revision;
+            phase.queue_visible = true; phase.progress = .8F; phase.monotonic_seconds = 1;
+            animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
+            phase.monotonic_seconds = 1.075;
+            card = animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
+            expect(card.opacity > .49F && card.opacity < .51F && card.revision == qr_revision
+                && animated.rasterizations() == 1, "fade-out changes opacity, never QR pixels or fonts");
+            phase.monotonic_seconds = 1.15;
+            animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
+            phase.monotonic_seconds = 1.225;
+            card = animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
+            expect(card.opacity > .49F && card.opacity < .51F && card.height == 455
+                && animated.rasterizations() == 2, "fade-in reuses one newly cached list");
+            phase.monotonic_seconds = 1.3;
+            animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
+            content.queue.front().title = L"顶歌后的下一首";
+            content.queue.pop_back();
+            phase.monotonic_seconds = 1.31;
+            card = animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
+            expect(card.opacity == 1 && !card.animating && card.height == 385
+                && animated.rasterizations() == 3, "queue update and resize never restart the tail fade");
+            const auto progress = read_card(card, device.native_d3d_device());
+            expect(progress[(64 * 500 + 100) * 4] > 200 && progress[(64 * 500 + 432) * 4] < 100,
+                "queue mutation preserves the current 80 percent progress, not a new countdown");
+            phase.program_instance = 2; phase.progress = 0; phase.monotonic_seconds = 2;
+            animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
+            const auto progress_updates = animated.progress_updates();
+            phase.monotonic_seconds = 2.075;
+            animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
+            phase.monotonic_seconds = 2.15;
+            card = animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
+            expect(card.opacity == 1 && !card.animating && animated.rasterizations() == 3
+                && animated.progress_updates() == progress_updates,
+                "takeover fade neither re-rasterizes text nor reruns the progress stripe");
+        }
 
         expect(LanStateMonitor::usable_ipv4(0xc0a80102) && !LanStateMonitor::usable_ipv4(0x7f000001)
             && !LanStateMonitor::usable_ipv4(0xa9fe0001), "LAN is independent of Internet reachability");
@@ -190,6 +293,7 @@ int main(int argc, char** argv) {
         expect(notifications.load() == count, "callback unregister completes before return");
         expect(show_host_set_phone_order_qr_image(handle, nullptr) && !host->hud.qr.load(), "clear image");
         expect(!host->hud.physical_output.initialized(), "controller-only mode creates no HUD visual");
+        expect(!host->hud.animation_timer_active, "controller-only mode never starts an animation timer");
         show_host_set_lan_state_callback(handle, nullptr, nullptr);
         show_host_destroy(handle);
     }

@@ -55,6 +55,9 @@ int main() {
         expect(output.submissions() == 1, "visibility keeps existing pixels");
         expect(output.present(card.native_texture(), 500, 25, 2), "refresh changed HUD");
         expect(output.submissions() == 2, "one present per content revision");
+        for (int i = 0; i <= 10; ++i)
+            expect(output.present(card.native_texture(), 500, 25, 2, i / 10.0F), "opacity-only composition update");
+        expect(output.submissions() == 2, "fades never copy or present the cached bitmap again");
         expect(renderer.rendered_frames() == 1 && !preview.peek_latest(),
             "HUD changes never render or publish clean preview frames");
         expect(clean->timing.generation == 1 && clean->timing.frame_id == 0,

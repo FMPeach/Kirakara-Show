@@ -11,6 +11,37 @@ struct HostHudClockInput {
 struct HostHudPresentation {
     bool queue_visible{};
     float progress{1};
+    std::uint64_t program_instance{};
+    double monotonic_seconds{};
+    bool transitions_enabled{};
+};
+
+enum class HostHudScene { hidden, qr, queue };
+struct HostHudTransitionInput {
+    HostHudScene desired{HostHudScene::hidden};
+    std::uint64_t program_instance{};
+    double monotonic_seconds{};
+    bool enabled{}, qr_available{true}, queue_available{true};
+};
+struct HostHudAppearance {
+    HostHudScene scene{HostHudScene::hidden};
+    float opacity{};
+    bool animating{};
+};
+
+// Opacity-only transitions over one cached card. Metadata is deliberately
+// absent: changing a queue entry cannot restart an animation or a countdown.
+class HostHudTransition {
+public:
+    HostHudAppearance update(const HostHudTransitionInput& input);
+private:
+    enum class Phase { steady, fade_out, fade_in };
+    HostHudAppearance evaluate(double now);
+    HostHudScene current_{HostHudScene::hidden}, target_{HostHudScene::hidden};
+    Phase phase_{Phase::steady};
+    std::uint64_t program_{};
+    double started_{};
+    float from_opacity_{};
 };
 
 // Shared, bounded state across output-mode changes. Never controls media clocks.

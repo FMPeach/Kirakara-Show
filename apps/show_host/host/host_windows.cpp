@@ -233,6 +233,12 @@ LRESULT CALLBACK stage_proc(
         host->hud.refresh_pending.store(false);
         render_physical_hud(*host);
         return TRUE;
+    case WM_TIMER:
+        if (host && wparam == kHostHudAnimationTimer) {
+            render_physical_hud(*host);
+            return 0;
+        }
+        break;
     case kHostLanChangedMessage:
         if (host) refresh_host_lan_state(*host);
         return 0;

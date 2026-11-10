@@ -753,9 +753,6 @@ int wmain(int argc, wchar_t** argv) {
               << " ms http-send-block="
               << event_ms(SHOW_CAST_EVENT_HTTP_SEND, true)
               << " ms" << std::endl;
-    expect(max_av_delta <= 4500,
-        "Cast H264/AAC PTS delta exceeds 50 ms");
-
     ShowHostCastPipelineTraceState trace_state{};
     trace_state.struct_size = sizeof(trace_state);
     expect(show_host_get_cast_pipeline_trace_state(host, &trace_state)
@@ -767,6 +764,15 @@ int wmain(int argc, wchar_t** argv) {
     const auto trace_count = show_host_read_cast_pipeline_trace(
         host, trace.data(), static_cast<std::uint32_t>(trace.size()), 0);
     expect(trace_count > 0, "read detailed Cast trace");
+    if (test_hud) for (std::uint32_t i = 0; i < trace_count; ++i) {
+        const auto& record = trace[i];
+        const auto ms = record.duration_qpc * 1000.0 / pipeline.qpc_frequency;
+        if (record.event == SHOW_CAST_EVENT_OVERLAY_DRAW && ms > 12)
+            std::cout << "HUD_OVERLAY_LONG_MS " << ms << " content=" << record.correlation_id
+                << " program=" << record.related_id << " layers=" << record.value << '\n';
+    }
+    expect(max_av_delta <= 4500,
+        "Cast H264/AAC PTS delta exceeds 50 ms");
     bool saw_encoder_input{};
     bool saw_encoder_output{};
     bool saw_ts_append{};

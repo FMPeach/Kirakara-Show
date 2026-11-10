@@ -103,6 +103,11 @@ CastOverlayRect union_rect(
     return {x1, y1, x2 - x1, y2 - y1};
 }
 
+bool intersects(const CastOverlayRect& a, const CastOverlayRect& b) noexcept {
+    return !a.empty() && !b.empty() && a.x < b.x + b.width && b.x < a.x + a.width
+        && a.y < b.y + b.height && b.y < a.y + a.height;
+}
+
 void include_title_band(
         DesignBand& band,
         const kirakara::show::SongTitleConfig& title) noexcept {
@@ -237,6 +242,7 @@ struct CastOverlayRenderer::Impl {
     CastPipelineDiagnostics* diagnostics{};
     CastOverlayFrame frame;
     std::uint64_t last_signature{};
+    std::uint64_t last_program_signature{};
     bool signature_valid{};
     CastOverlayRect previous_coverage;
     CastOverlayRect previous_hud;
@@ -289,6 +295,7 @@ struct CastOverlayRenderer::Impl {
         diagnostics = nullptr;
         frame = {};
         last_signature = 0;
+        last_program_signature = 0;
         signature_valid = false;
         previous_coverage = {};
         previous_hud = {};
@@ -320,13 +327,15 @@ struct CastOverlayRenderer::Impl {
         const bool lyrics_active = frame_has_visible_lyrics(lyric_frame);
         const bool hud_visible = hud && hud->visible;
         const bool empty = !title_active && !lyrics_active && !hud_visible;
-        auto signature = overlay_signature(
+        const auto program_signature = overlay_signature(
             lyric_frame, title_opacity, title_active, lyrics_active,
             content_revision);
+        auto signature = program_signature;
         hash_value(signature, hud_visible);
         CastOverlayRect hud_rect;
         if (hud_visible) {
             hash_value(signature, hud->revision);
+            hash_value(signature, std::bit_cast<std::uint32_t>(hud->opacity));
             hash_value(signature, reinterpret_cast<std::uintptr_t>(hud->texture));
             hash_value(signature, hud->x); hash_value(signature, hud->y);
             const auto left = hud->x & ~1U, top = hud->y & ~1U;
@@ -353,21 +362,27 @@ struct CastOverlayRenderer::Impl {
         }
         if (empty && frame.empty) {
             last_signature = signature;
+            last_program_signature = program_signature;
             signature_valid = true;
             return true;
         }
 
         const auto started = diagnostics
             ? CastPipelineDiagnostics::qpc_now() : 0;
-        const auto dirty_rect = union_rect(union_rect(previous_coverage, current_coverage),
-            union_rect(previous_hud, hud_rect));
-        if (!clear_transparent(previous_coverage) || !clear_transparent(current_coverage)
+        const auto hud_dirty = union_rect(previous_hud, hud_rect);
+        // A card-only fade need not redraw a static title/lyric band elsewhere.
+        // Overlap still takes the normal full-layer path to preserve stacking.
+        const bool hud_only = signature_valid && program_signature == last_program_signature
+            && !intersects(current_coverage, hud_dirty);
+        const auto dirty_rect = hud_only ? hud_dirty
+            : union_rect(union_rect(previous_coverage, current_coverage), hud_dirty);
+        if ((!hud_only && (!clear_transparent(previous_coverage) || !clear_transparent(current_coverage)))
                 || !clear_transparent(previous_hud) || !clear_transparent(hud_rect)) {
             signature_valid = false;
             previous_coverage = {0, 0, frame.width, frame.height};
             return false;
         }
-        if (title_active) {
+        if (title_active && !hud_only) {
             if (!title_renderer->attach_native_target(
                     surface.native_render_target())
                     || !title_renderer->render(
@@ -375,7 +390,7 @@ struct CastOverlayRenderer::Impl {
                 return false;
             }
         }
-        if (lyrics_active) {
+        if (lyrics_active && !hud_only) {
             if (!lyric_renderer.attach_native_target(
                     surface.native_render_target())
                     || !lyric_renderer.render_overlay_frame(
@@ -393,6 +408,7 @@ struct CastOverlayRenderer::Impl {
         previous_coverage = current_coverage;
         previous_hud = hud_rect;
         last_signature = signature;
+        last_program_signature = program_signature;
         signature_valid = true;
         if (diagnostics) {
             diagnostics->record_duration(

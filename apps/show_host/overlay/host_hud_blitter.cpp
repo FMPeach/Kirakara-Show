@@ -32,7 +32,7 @@ bool HostHudBlitter::draw(void* target, const HostHudFrame& card) {
     context->BeginDraw();
     context->DrawBitmap(p.bitmap.Get(), D2D1::RectF(static_cast<float>(card.x),
         static_cast<float>(card.y), static_cast<float>(card.x + card.width),
-        static_cast<float>(card.y + card.height)), 1, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+        static_cast<float>(card.y + card.height)), card.opacity, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
     const auto hr = context->EndDraw();
     context->SetPrimitiveBlend(blend); context->SetTransform(transform);
     return SUCCEEDED(hr);
@@ -59,7 +59,8 @@ bool HostHudRetainedBgraLayer::apply(void* target, const HostHudFrame& card, boo
     const auto old = p.previous;
     const bool same = old.visible == card.visible && (!card.visible || (
         old.texture == card.texture && old.revision == card.revision && old.x == card.x
-        && old.y == card.y && old.width == card.width && old.height == card.height));
+        && old.y == card.y && old.width == card.width && old.height == card.height
+        && old.opacity == card.opacity));
     if (!clean_changed && same) return true;
     if (!old.visible && !card.visible) return true;
     if (!clean_changed && old.visible && p.underlay) {

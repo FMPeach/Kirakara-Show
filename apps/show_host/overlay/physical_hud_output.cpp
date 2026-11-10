@@ -19,12 +19,13 @@ struct PhysicalHudOutput::Impl {
     ComPtr<IDCompositionDevice> composition;
     ComPtr<IDCompositionTarget> target;
     ComPtr<IDCompositionVisual> visual;
+    ComPtr<IDCompositionEffectGroup> opacity_effect;
     ComPtr<IDXGISwapChain1> swap_chain;
     ComPtr<ID3D11Texture2D> source;
     std::uint32_t width{}, height{};
     std::uint64_t revision{}, submitted{};
-    float x{}, y{};
-    bool visible{}, has_content{};
+    float x{}, y{}, opacity{1};
+    bool visible{}, has_content{}, effect_attached{};
     HRESULT error{S_OK};
 
     bool check(HRESULT hr) noexcept {
@@ -38,6 +39,7 @@ struct PhysicalHudOutput::Impl {
             if (composition) composition->Commit();
         }
         source.Reset();
+        opacity_effect.Reset();
         visual.Reset();
         swap_chain.Reset();
         target.Reset();
@@ -49,6 +51,7 @@ struct PhysicalHudOutput::Impl {
         width = height = 0;
         revision = submitted = 0;
         visible = has_content = false;
+        opacity = 1; effect_attached = false;
     }
 
     bool initialize(HWND hwnd, ID3D11Device* requested_device) {
@@ -77,8 +80,9 @@ struct PhysicalHudOutput::Impl {
     }
 
     bool present(ID3D11Texture2D* texture, float left, float top,
-            std::uint64_t content_revision) {
-        if (!target || !texture || !std::isfinite(left) || !std::isfinite(top)) {
+            std::uint64_t content_revision, float requested_opacity) {
+        if (!target || !texture || !std::isfinite(left) || !std::isfinite(top)
+                || !std::isfinite(requested_opacity) || requested_opacity < 0 || requested_opacity > 1) {
             return check(E_INVALIDARG);
         }
         ComPtr<ID3D11Device> input_device;
@@ -121,12 +125,25 @@ struct PhysicalHudOutput::Impl {
             revision = content_revision;
             has_content = true;
         }
-        if (changed || !visible || x != left || y != top) {
+        const bool opacity_changed = opacity != requested_opacity;
+        if (changed || opacity_changed || !visible || x != left || y != top) {
+            if (opacity_changed) {
+                if (requested_opacity < 1) {
+                    if (!opacity_effect && !check(composition->CreateEffectGroup(&opacity_effect))) return false;
+                    if (!check(opacity_effect->SetOpacity(requested_opacity))) return false;
+                    if (!effect_attached && !check(visual->SetEffect(opacity_effect.Get()))) return false;
+                    effect_attached = true;
+                } else if (effect_attached) {
+                    if (!check(visual->SetEffect(nullptr))) return false;
+                    effect_attached = false;
+                }
+            }
             if (!check(visual->SetOffsetX(left)) || !check(visual->SetOffsetY(top))
                     || !check(target->SetRoot(visual.Get()))
                     || !check(composition->Commit())) return false;
             x = left;
             y = top;
+            opacity = requested_opacity;
             visible = true;
         }
         return check(S_OK);
@@ -138,8 +155,8 @@ PhysicalHudOutput::~PhysicalHudOutput() { impl_->shutdown(); }
 bool PhysicalHudOutput::initialize(void* hwnd, void* device) {
     return impl_->initialize(static_cast<HWND>(hwnd), static_cast<ID3D11Device*>(device));
 }
-bool PhysicalHudOutput::present(void* texture, float x, float y, std::uint64_t revision) {
-    return impl_->present(static_cast<ID3D11Texture2D*>(texture), x, y, revision);
+bool PhysicalHudOutput::present(void* texture, float x, float y, std::uint64_t revision, float opacity) {
+    return impl_->present(static_cast<ID3D11Texture2D*>(texture), x, y, revision, opacity);
 }
 bool PhysicalHudOutput::set_visible(bool visible) {
     if (!impl_->visual) return !visible;

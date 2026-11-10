@@ -18,6 +18,7 @@ struct HostHudRuntime {
     HostHudController controller;
     std::atomic<std::uint64_t> program_instance{}, discontinuity_revision{};
     std::atomic<bool> refresh_pending{};
+    bool animation_timer_active{};
     ShowHostLanStateCallback callback{};
     void* callback_context{};
 };

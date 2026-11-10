@@ -12,6 +12,7 @@ using Microsoft::WRL::ComPtr;
 struct HostHudRenderer::Impl {
     kirakara::show::win32::D3D11TextureSurface surface;
     ComPtr<ID2D1Bitmap1> qr;
+    ComPtr<ID2D1RoundedRectangleGeometry> qr_clip;
     ComPtr<IDWriteFactory> fonts;
     std::shared_ptr<const HostHudQrImage> image;
     std::wstring network;
@@ -24,6 +25,7 @@ struct HostHudRenderer::Impl {
     std::uint64_t draws{}, progress_draws{};
     int progress_pixels{-1};
     HostHudFrame frame;
+    HostHudTransition transition;
     bool cached{}, ready{}, queue_mode{}, network_wifi{};
 
     bool load_qr(ID2D1DeviceContext* context, const HostHudQrImage& input) {
@@ -50,12 +52,17 @@ struct HostHudRenderer::Impl {
         return SUCCEEDED(context->CreateBitmapFromWicBitmap(converter.Get(), nullptr, &qr));
     }
     void text(ID2D1DeviceContext* context, ID2D1Brush* brush, const wchar_t* value,
-            float size, D2D1_RECT_F rect, DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_NORMAL) {
+            float size, D2D1_RECT_F rect, DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_NORMAL,
+            bool centered = false) {
         ComPtr<IDWriteTextFormat> format;
         ComPtr<IDWriteTextLayout> layout;
         if (!fonts || FAILED(fonts->CreateTextFormat(L"Microsoft YaHei UI", nullptr, weight,
                 DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, L"zh-CN", &format))) return;
         format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        if (centered) {
+            format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+        }
         DWRITE_TRIMMING trimming{DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0};
         ComPtr<IDWriteInlineObject> ellipsis;
         if (SUCCEEDED(fonts->CreateEllipsisTrimmingSign(format.Get(), &ellipsis)))
@@ -76,9 +83,18 @@ const HostHudFrame& HostHudRenderer::render(void* device, std::uint32_t width,
         std::shared_ptr<const HostHudQrImage> image, bool lan_available, HostHudPresentation presentation) {
     auto& p = *impl_;
     p.frame.visible = false;
+    p.frame.animating = false;
     if (!device || !width || !height || !state) return p.frame;
-    const bool queue_mode = presentation.queue_visible && state->options.queue_enabled;
-    if (!queue_mode && (!state->options.qr_enabled || !lan_available || !image || !image->valid())) return p.frame;
+    const bool qr_allowed = state->options.qr_enabled && lan_available && image && image->valid();
+    const auto desired = presentation.queue_visible && state->options.queue_enabled ? HostHudScene::queue
+        : qr_allowed ? HostHudScene::qr : HostHudScene::hidden;
+    const auto appearance = p.transition.update({desired, presentation.program_instance,
+        presentation.monotonic_seconds, presentation.transitions_enabled,
+        qr_allowed, state->options.queue_enabled});
+    p.frame.opacity = appearance.opacity;
+    p.frame.animating = appearance.animating;
+    if (appearance.scene == HostHudScene::hidden) return p.frame;
+    const bool queue_mode = appearance.scene == HostHudScene::queue;
     const float scale = std::min(width / 1920.0F, height / 1080.0F);
     const bool has_current = !state->current.title.empty() || !state->current.artist.empty();
     const auto rows = (has_current ? 1U : 0U) + std::max<std::size_t>(1, state->queue.size());
@@ -97,7 +113,7 @@ const HostHudFrame& HostHudRenderer::render(void* device, std::uint32_t width,
     if (changed) {
         p.ready = false;
         if (resized) {
-            p.qr.Reset(); p.brush.Reset(); p.icons.reset();
+            p.qr.Reset(); p.qr_clip.Reset(); p.brush.Reset(); p.icons.reset();
             p.surface = {};
             if (!p.surface.resize_on_device(device, card_w, card_h)) return p.frame;
             p.device = device; p.width = width; p.height = height;
@@ -109,11 +125,29 @@ const HostHudFrame& HostHudRenderer::render(void* device, std::uint32_t width,
         else {
             p.image = image; p.network = state->network_name; p.network_wifi = state->network_wifi;
             if (image_changed && !p.load_qr(context, *image)) return p.frame;
-            if (!p.qr || 180 * scale < image->modules) return p.frame;
+            if (!p.qr || 176 * scale < image->modules) return p.frame;
         }
         if (!p.fonts && FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED,
                 __uuidof(IDWriteFactory), reinterpret_cast<IUnknown**>(p.fonts.GetAddressOf())))) return p.frame;
         if (!p.brush && FAILED(context->CreateSolidColorBrush(D2D1::ColorF(1, 1, 1), &p.brush))) return p.frame;
+        // The shared PNG already includes the quiet zone; no decorative border
+        // is added. Only its outer white corners participate in the round clip.
+        // Enlarge the centered block slightly without module-sized jumps.
+        // Nearest-neighbour sampling preserves the black/white contrast.
+        const auto qr_side = queue_mode ? 0.0F : std::round(176 * scale);
+        const auto module_pixels = queue_mode ? 0.0F : qr_side / image->modules;
+        const auto qr_left = std::round(122 * scale - qr_side / 2);
+        const auto qr_top = std::round(122 * scale - qr_side / 2);
+        if (!queue_mode && (!p.qr_clip || image_changed)) {
+            const auto radius = std::min(18.0F * scale,
+                2.0F * module_pixels * (2.0F + std::sqrt(2.0F)));
+            ComPtr<ID2D1Factory> factory;
+            context->GetFactory(&factory);
+            p.qr_clip.Reset();
+            if (FAILED(factory->CreateRoundedRectangleGeometry(D2D1::RoundedRect(
+                    D2D1::RectF(qr_left, qr_top, qr_left + qr_side, qr_top + qr_side), radius, radius),
+                    &p.qr_clip))) return p.frame;
+        }
         auto& brush = p.brush;
         p.surface.begin_draw(); p.surface.clear({0, 0, 0, 0});
         context->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale));
@@ -138,11 +172,12 @@ const HostHudFrame& HostHudRenderer::render(void* device, std::uint32_t width,
                 }
                 brush->SetColor(playing ? D2D1::ColorF(245 / 255.0F, 158 / 255.0F, 11 / 255.0F)
                     : D2D1::ColorF(100 / 255.0F, 116 / 255.0F, 139 / 255.0F));
-                p.text(context, brush.Get(), marker.c_str(), 15, D2D1::RectF(37, y + 18, 65, y + 45), DWRITE_FONT_WEIGHT_BOLD);
+                p.text(context, brush.Get(), marker.c_str(), 20, D2D1::RectF(22, y, 82, y + 60),
+                    DWRITE_FONT_WEIGHT_BOLD, true);
                 brush->SetColor(D2D1::ColorF(248 / 255.0F, 250 / 255.0F, 252 / 255.0F));
-                p.text(context, brush.Get(), item.title.c_str(), 18, D2D1::RectF(75, y + 5, 460, y + 34), DWRITE_FONT_WEIGHT_BOLD);
+                p.text(context, brush.Get(), item.title.c_str(), 18, D2D1::RectF(84, y + 8, 460, y + 37), DWRITE_FONT_WEIGHT_BOLD);
                 brush->SetColor(D2D1::ColorF(148 / 255.0F, 163 / 255.0F, 184 / 255.0F));
-                p.text(context, brush.Get(), item.artist.c_str(), 14, D2D1::RectF(75, y + 33, 460, y + 56));
+                p.text(context, brush.Get(), item.artist.c_str(), 14, D2D1::RectF(84, y + 36, 460, y + 59));
             };
             if (has_current) draw_row(p.current, 0, L"▶", true);
             for (std::size_t i = 0; i < p.queue.size(); ++i) {
@@ -154,9 +189,10 @@ const HostHudFrame& HostHudRenderer::render(void* device, std::uint32_t width,
                 p.text(context, brush.Get(), L"待播队列为空，扫码抢麦", 16, D2D1::RectF(36, y, 478, y + 39));
             }
         } else {
+            context->SetTransform(D2D1::Matrix3x2F::Translation(0, -4)
+                * D2D1::Matrix3x2F::Scale(scale, scale));
             brush->SetColor(D2D1::ColorF(1, 1, 1));
-            context->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(24, 24, 220, 220), 18, 18), brush.Get());
-            p.text(context, brush.Get(), L"扫码点歌", 32, D2D1::RectF(244, 44, 480, 88), DWRITE_FONT_WEIGHT_BOLD);
+            p.text(context, brush.Get(), L"扫码点歌", 32, D2D1::RectF(244, 40, 480, 84), DWRITE_FONT_WEIGHT_BOLD);
             static_cast<void>(p.icons.draw(context, HostHudIcon::phone, 388, 48, 26));
             brush->SetColor(D2D1::ColorF(148 / 255.0F, 163 / 255.0F, 184 / 255.0F));
             p.text(context, brush.Get(), L"请确保手机和点歌设备", 14, D2D1::RectF(244, 94, 478, 116));
@@ -178,12 +214,11 @@ const HostHudFrame& HostHudRenderer::render(void* device, std::uint32_t width,
         }
         context->SetTransform(D2D1::Matrix3x2F::Identity());
         if (!queue_mode) {
-            const auto module_pixels = std::max(1U, static_cast<std::uint32_t>(180 * scale) / image->modules);
-            const auto side = static_cast<float>(module_pixels * image->modules);
-            const auto left = std::round(122 * scale - side / 2);
-            const auto top = std::round(122 * scale - side / 2);
-            context->DrawBitmap(p.qr.Get(), D2D1::RectF(left, top, left + side, top + side),
+            const auto bounds = D2D1::RectF(qr_left, qr_top, qr_left + qr_side, qr_top + qr_side);
+            context->PushLayer(D2D1::LayerParameters1(bounds, p.qr_clip.Get()), nullptr);
+            context->DrawBitmap(p.qr.Get(), D2D1::RectF(qr_left, qr_top, qr_left + qr_side, qr_top + qr_side),
                 1, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+            context->PopLayer();
         }
         if (!p.surface.end_draw()) { p.cached = false; return p.frame; }
         p.surface.flush_d2d();
@@ -210,6 +245,6 @@ const HostHudFrame& HostHudRenderer::render(void* device, std::uint32_t width,
         }
     }
     p.frame.texture = p.surface.native_texture();
-    p.frame.visible = p.ready && p.frame.texture != nullptr;
+    p.frame.visible = p.ready && p.frame.texture != nullptr && p.frame.opacity > 0;
     return p.frame;
 }

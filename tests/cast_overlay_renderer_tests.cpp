@@ -337,11 +337,32 @@ int main() {
         expect(overlay.render(document, empty_title, 1.5, engine, low_style, 5,
             lyric_renderer, &title_renderer, &hud) && overlay.frame().content_version == version,
             "static combined overlay reuses texture");
+        const auto before_fade = read_bgra(device, context, static_cast<ID3D11Texture2D*>(overlay.frame().texture));
+        hud.opacity = .5F;
+        expect(overlay.render(document, empty_title, 1.5, engine, low_style, 5,
+            lyric_renderer, &title_renderer, &hud) && overlay.frame().content_version == version + 1,
+            "opacity alone invalidates the small Cast HUD region");
+        expect(overlay.frame().dirty_rect.x == 200 && overlay.frame().dirty_rect.width == 100
+            && overlay.frame().dirty_rect.y == 4 && overlay.frame().dirty_rect.height == 30,
+            "card-only fade leaves the disjoint lyric band out of the dirty region");
+        pixels = read_bgra(device, context, static_cast<ID3D11Texture2D*>(overlay.frame().texture));
+        expect(std::equal(pixels.begin() + 60 * 320 * 4, pixels.end(),
+            before_fade.begin() + 60 * 320 * 4), "HUD fade preserves all lower program pixels");
+        expect(pixels[(10 * 320 + 250) * 4 + 3] >= 99
+            && pixels[(10 * 320 + 250) * 4 + 3] <= 105, "Cast A keeps half of cached HUD alpha");
+        expect(overlay.render(document, empty_title, 1.5, engine, low_style, 5,
+            lyric_renderer, &title_renderer, &hud) && !overlay.frame().changed,
+            "stable partial opacity is still cached");
+        hud.x = 0; hud.y = 130; hud.opacity = .75F;
+        expect(overlay.render(document, empty_title, 1.5, engine, low_style, 5,
+            lyric_renderer, &title_renderer, &hud), "fade over a potentially overlapping lyric band");
         hud.visible = false;
         expect(overlay.render(document, empty_title, 1.5, engine, low_style, 5,
             lyric_renderer, &title_renderer, &hud), "HUD removed during held program");
         pixels = read_bgra(device, context, static_cast<ID3D11Texture2D*>(overlay.frame().texture));
         expect(pixels[(10 * 320 + 250) * 4 + 3] == 0, "old HUD is erased");
+        expect(std::equal(pixels.begin() + 60 * 320 * 4, pixels.end(),
+            before_fade.begin() + 60 * 320 * 4), "overlapping HUD removal restores the unchanged lyric pixels");
         expect(overlay.frame().coverage_count == 1, "lyric-only ROI restored");
     }
     overlay.reset();

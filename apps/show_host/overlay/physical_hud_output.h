@@ -14,7 +14,7 @@ public:
 
     [[nodiscard]] bool initialize(void* hwnd, void* d3d_device);
     [[nodiscard]] bool present(void* texture, float left, float top,
-        std::uint64_t content_revision);
+        std::uint64_t content_revision, float opacity = 1.0F);
     [[nodiscard]] bool set_visible(bool visible);
     void shutdown() noexcept;
     [[nodiscard]] bool initialized() const noexcept;

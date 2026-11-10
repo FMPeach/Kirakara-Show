@@ -19,7 +19,7 @@ struct HostHudOptions {
 };
 
 // An App-produced PNG, including its quiet zone. modules describes the whole
-// image so the renderer can choose an integral scale without encoding a QR.
+// image so the renderer can check its density without encoding a QR.
 struct HostHudQrImage {
     std::uint64_t revision{};
     // Stamped by Host on receipt; a network event requires App to confirm

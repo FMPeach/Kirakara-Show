@@ -38,6 +38,7 @@ constexpr UINT kHostHudStateMessage = WM_APP + 124;
 constexpr UINT kHostHudQrMessage = WM_APP + 125;
 constexpr UINT kHostLanChangedMessage = WM_APP + 126;
 constexpr UINT kHostLanCallbackMessage = WM_APP + 127;
+constexpr UINT_PTR kHostHudAnimationTimer = 0x4b48;
 
 // ── Dimensions ───────────────────────────────────────────────────
 

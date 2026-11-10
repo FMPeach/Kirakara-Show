@@ -9,6 +9,8 @@ struct HostHudFrame {
     std::uint32_t x{}, y{}, width{}, height{};
     std::uint64_t revision{};
     bool visible{};
+    float opacity{1};
+    bool animating{};
 };
 
 // Owner-thread cache of the small card only, shared by the two Host adapters.
