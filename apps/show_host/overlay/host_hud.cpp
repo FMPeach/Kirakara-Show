@@ -24,7 +24,8 @@ void refresh_host_lan_state(ShowHost& host) {
     const auto available = host.hud.network.refresh();
     if (!available) return; // Keep the last known state after an OS query error.
     host.hud.lan_available.store(*available, std::memory_order_release);
-    const auto revision = host.hud.lan_revision.fetch_add(1, std::memory_order_acq_rel) + 1;
+    const auto revision = host.hud.network.revision();
+    if (host.hud.lan_revision.exchange(revision, std::memory_order_acq_rel) == revision) return;
     if (host.hud.callback) host.hud.callback(host.hud.callback_context, revision, *available);
     render_physical_hud(host);
 }
@@ -43,7 +44,8 @@ void render_physical_hud(ShowHost& host) {
     const auto presentation = host.hud.controller.update({
         host.hud.program_instance.load(), host.hud.discontinuity_revision.load(),
         host.playback.position.load(), host.playback.duration.load(), now, active, advancing,
-        host.native_stage.stage_program_ready || (active && host.playback.current_media.video.empty() && advancing)});
+        host.native_stage.stage_program_ready || (active && host.playback.current_media.video.empty() && advancing),
+        host.output_transition.native_transition_holding});
     if (!has_physical_stage_output(host)) {
         set_animation_timer(host, false);
         static_cast<void>(host.hud.physical_output.set_visible(false));

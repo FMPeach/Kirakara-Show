@@ -7,6 +7,7 @@ struct HostHudClockInput {
     std::uint64_t discontinuity_revision{};
     double position{}, duration{}, monotonic_seconds{};
     bool active{}, advancing{}, taken_over{};
+    bool holding_previous_output{};
 };
 struct HostHudPresentation {
     bool queue_visible{};
@@ -29,8 +30,8 @@ struct HostHudAppearance {
     bool animating{};
 };
 
-// Opacity-only transitions over one cached card. Metadata is deliberately
-// absent: changing a queue entry cannot restart an animation or a countdown.
+// Whole-card opacity follows scene changes. Row-content blending belongs to
+// the renderer; metadata updates never restart this transition or a countdown.
 class HostHudTransition {
 public:
     HostHudAppearance update(const HostHudTransitionInput& input);
@@ -39,7 +40,6 @@ private:
     HostHudAppearance evaluate(double now);
     HostHudScene current_{HostHudScene::hidden}, target_{HostHudScene::hidden};
     Phase phase_{Phase::steady};
-    std::uint64_t program_{};
     double started_{};
     float from_opacity_{};
 };

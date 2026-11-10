@@ -195,6 +195,27 @@ int main(int argc, char** argv) {
         state.queue.clear();
         expect(renderer.render(device.native_d3d_device(), 1920, 1080, &state, {}, false, queue_phase).visible,
             "empty queue has its own prompt");
+        for (const bool has_current : {false, true}) {
+            HostHudState empty;
+            empty.options.queue_enabled = true;
+            if (has_current) empty.current = {L"当前歌曲", L"当前歌手"};
+            const auto card = renderer.render(device.native_d3d_device(), 1920, 1080, &empty, {}, false, queue_phase);
+            const auto pixels = read_card(card, device.native_d3d_device());
+            const int top = 84 + (has_current ? 70 : 0);
+            int left = 500, right = -1, first = top + 60, last = -1;
+            for (int y = top; y < top + 60; ++y) for (int x = 22; x < 478; ++x) {
+                const auto i = (y * 500 + x) * 4;
+                if (pixels[i] > 50 && pixels[i + 1] > pixels[i] + 8 && pixels[i + 2] > pixels[i + 1] + 8) {
+                    left = std::min(left, x); right = std::max(right, x);
+                    first = std::min(first, y); last = std::max(last, y);
+                }
+            }
+            expect(right >= left && std::abs((left + right) / 2.0F - 250) <= 2
+                && std::abs((first + last) / 2.0F - (top + 30)) <= 4,
+                "empty-list prompt is centered in its row with or without a current song");
+            if (argc > 1) save_card(std::filesystem::path(argv[1])
+                / (has_current ? "empty-queue-current.png" : "empty-queue.png"), card, device.native_d3d_device());
+        }
 
         {
             HostHudRenderer animated;
@@ -206,7 +227,31 @@ int main(int argc, char** argv) {
             animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
             phase.monotonic_seconds = .15;
             auto card = animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
-            expect(card.visible && !card.animating && animated.rasterizations() == 1, "initial fade reuses one QR card");
+            expect(card.visible && card.opacity == 1 && !card.animating && animated.rasterizations() == 1,
+                "QR starts opaque with one cached card");
+            for (int i = 0; i < 100; ++i) {
+                ++content.revision; ++phase.program_instance;
+                content.queue.front().title = std::to_wstring(i);
+                content.current.title = std::to_wstring(i);
+                auto same_image = std::make_shared<HostHudQrImage>(*image);
+                ++same_image->network_revision;
+                card = animated.render(device.native_d3d_device(), 1920, 1080, &content, same_image, true, phase);
+                expect(card.visible && card.opacity == 1 && !card.animating && animated.rasterizations() == 1,
+                    "QR ignores queue, program and download-style revision updates");
+            }
+            content.network_name = L"新的网络名";
+            card = animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
+            expect(card.opacity == 1 && !card.animating && animated.rasterizations() == 2,
+                "network text can refresh without replaying QR animation");
+            animated.reset();
+            card = animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
+            expect(card.opacity == 1 && !card.animating && animated.rasterizations() == 1,
+                "GPU cache reset preserves presentation state");
+            card = animated.render(device.native_d3d_device(), 1920, 1080, &content, image, false, phase);
+            expect(!card.visible, "actual disconnection still hides the card");
+            card = animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
+            expect(card.visible && card.opacity == 1 && !card.animating && animated.rasterizations() == 1,
+                "network recovery restores the cached QR without an initial fade");
             const auto qr_revision = card.revision;
             phase.queue_visible = true; phase.progress = .8F; phase.monotonic_seconds = 1;
             animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
@@ -226,11 +271,31 @@ int main(int argc, char** argv) {
             content.queue.pop_back();
             phase.monotonic_seconds = 1.31;
             card = animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
-            expect(card.opacity == 1 && !card.animating && card.height == 385
-                && animated.rasterizations() == 3, "queue update and resize never restart the tail fade");
+            expect(card.opacity == 1 && card.animating && card.height == 385
+                && animated.rasterizations() == 3, "queue content blends internally without zeroing the card");
             const auto progress = read_card(card, device.native_d3d_device());
             expect(progress[(64 * 500 + 100) * 4] > 200 && progress[(64 * 500 + 432) * 4] < 100,
                 "queue mutation preserves the current 80 percent progress, not a new countdown");
+            HostHudRenderer reference;
+            const auto target_pixels = read_card(reference.render(device.native_d3d_device(), 1920, 1080,
+                &content, image, true, {true, .8F}), device.native_d3d_device());
+            phase.monotonic_seconds = 1.385;
+            card = animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
+            const auto halfway = read_card(card, device.native_d3d_device());
+            expect(halfway != progress && halfway != target_pixels && card.opacity == 1 && card.animating,
+                "old and new row pixels overlap halfway through the content fade");
+            if (argc > 1) save_card(std::filesystem::path(argv[1]) / "queue-content-halfway.png",
+                card, device.native_d3d_device());
+            expect(std::equal(progress.begin(), progress.begin() + 80 * 500 * 4, halfway.begin()),
+                "heading and progress never fade with the rows");
+            for (int i = 0; i <= 15; ++i) {
+                ++content.revision;
+                phase.monotonic_seconds = 1.385 + i * .005;
+                card = animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
+            }
+            expect(!card.animating && card.opacity == 1 && animated.rasterizations() == 3
+                && read_card(card, device.native_d3d_device()) == target_pixels,
+                "revision-only refreshes do not restart the 150ms blend or re-layout text");
             phase.program_instance = 2; phase.progress = 0; phase.monotonic_seconds = 2;
             animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
             const auto progress_updates = animated.progress_updates();
@@ -240,7 +305,98 @@ int main(int argc, char** argv) {
             card = animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
             expect(card.opacity == 1 && !card.animating && animated.rasterizations() == 3
                 && animated.progress_updates() == progress_updates,
-                "takeover fade neither re-rasterizes text nor reruns the progress stripe");
+                "song identity alone neither animates nor rerasterizes the list");
+            const auto stable_revision = card.revision;
+            for (int i = 0; i < 100; ++i) {
+                ++content.revision;
+                phase.monotonic_seconds += .016;
+                card = animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
+                expect(card.opacity == 1 && !card.animating && card.revision == stable_revision,
+                    "static list does not perform GPU updates on transport notifications");
+            }
+            content.queue.push_back({L"新增到队列", L"歌手"});
+            phase.monotonic_seconds = 4;
+            card = animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
+            expect(card.opacity == 1 && card.animating && card.height == 455,
+                "growing list keeps its shell visible while rows blend");
+            phase.monotonic_seconds = 4.075;
+            card = animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
+            const auto expanded = read_card(card, device.native_d3d_device());
+            const auto same_pixel = [&](int y1, int y2) {
+                const auto first = (y1 * 500 + 450) * 4, second = (y2 * 500 + 450) * 4;
+                return std::equal(expanded.begin() + first, expanded.begin() + first + 4, expanded.begin() + second);
+            };
+            expect(same_pixel(382, 384) && same_pixel(384, 386),
+                "growing rows never inherit the shorter cached card's bottom border");
+            content.queue.front().artist = L"更新歌手";
+            card = animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
+            expect(card.opacity == 1 && card.animating, "another real list edit blends from the currently visible rows");
+            phase.monotonic_seconds = 4.225;
+            card = animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
+            expect(card.visible && !card.animating && card.opacity == 1,
+                "interrupted content blend stops after its own bounded interval");
+            const auto expected = read_card(reference.render(device.native_d3d_device(), 1920, 1080,
+                &content, image, true, {true, 0}), device.native_d3d_device());
+            expect(read_card(card, device.native_d3d_device()) == expected,
+                "resizing and interrupted blending converge to the exact new list");
+            if (argc > 1) save_card(std::filesystem::path(argv[1]) / "queue-content-finished.png",
+                card, device.native_d3d_device());
+            content.current.title = L"新歌曲接管";
+            phase.monotonic_seconds = 5;
+            animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
+            phase.queue_visible = false; phase.monotonic_seconds = 5.075;
+            card = animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
+            const auto unblended = read_card(reference.render(device.native_d3d_device(), 1920, 1080,
+                &content, image, true, {true, 0}), device.native_d3d_device());
+            expect(read_card(card, device.native_d3d_device()) == unblended,
+                "leaving the list finishes its rows before the real scene fade-out");
+            phase.monotonic_seconds = 5.375;
+            card = animated.render(device.native_d3d_device(), 1920, 1080, &content, image, true, phase);
+            expect(card.visible && card.height == 244 && card.opacity == 1 && !card.animating,
+                "real queue-to-QR transition still finishes at 300ms");
+        }
+
+        for (const auto& size : {std::pair{1920U, 1080U}, {3840U, 2160U}, {1280U, 720U},
+                {960U, 540U}, {1024U, 576U}, {640U, 360U}}) for (const bool has_current : {false, true}) {
+            HostHudRenderer resized_list, reference;
+            HostHudState content;
+            content.options.queue_enabled = true;
+            if (has_current) content.current = {L"当前播放", L"当前歌手"};
+            const auto set_rows = [&](std::size_t count) {
+                content.queue.clear();
+                for (std::size_t i = 0; i < count; ++i)
+                    content.queue.push_back({L"歌曲 " + std::to_wstring(i + 1), L"歌手"});
+                ++content.revision;
+            };
+            set_rows(4);
+            HostHudPresentation phase{true, .5F, 1, 0, false};
+            resized_list.render(device.native_d3d_device(), size.first, size.second, &content, {}, false, phase);
+            phase.transitions_enabled = true;
+            for (const auto count : {3U, 4U, 3U, 0U, 4U, 3U, 4U}) {
+                set_rows(count); phase.monotonic_seconds += 1;
+                auto card = resized_list.render(device.native_d3d_device(), size.first, size.second,
+                    &content, {}, false, phase);
+                const auto rows = (has_current ? 1U : 0U) + std::max(1U, count);
+                const auto expected_height = static_cast<std::uint32_t>(std::ceil(
+                    (105.0F + 70.0F * rows) * std::min(size.first / 1920.0F, size.second / 1080.0F)));
+                expect(card.visible && card.opacity == 1 && card.height == expected_height,
+                    "row count, not old bitmap dimensions, controls the target card");
+                const auto draws = resized_list.rasterizations();
+                const auto started = phase.monotonic_seconds;
+                for (int tick = 1; tick <= 10; ++tick) {
+                    ++content.revision; phase.monotonic_seconds = started + tick * .016;
+                    card = resized_list.render(device.native_d3d_device(), size.first, size.second,
+                        &content, {}, false, phase);
+                    expect(card.visible && card.opacity == 1 && card.height == expected_height,
+                        "changing row count never blanks or re-fades the card");
+                }
+                expect(!card.animating && resized_list.rasterizations() == draws,
+                    "resized row transition ends without repeated font layout");
+                const auto expected = read_card(reference.render(device.native_d3d_device(), size.first,
+                    size.second, &content, {}, false, {true, .5F}), device.native_d3d_device());
+                expect(read_card(card, device.native_d3d_device()) == expected,
+                    "4-to-3, 3-to-4 and empty-list transitions discard all stale row pixels");
+            }
         }
 
         expect(LanStateMonitor::usable_ipv4(0xc0a80102) && !LanStateMonitor::usable_ipv4(0x7f000001)
@@ -258,6 +414,10 @@ int main(int argc, char** argv) {
         ShowHostHudQueueItem item{title, L"artist"};
         ShowHostAudienceHudState input{sizeof(input), 1, 3, 1, 1, name, &item, current, L"current artist"};
         expect(show_host_set_audience_hud_state(handle, &input), "HUD input");
+        const auto published = host->hud.state.load();
+        ++input.revision;
+        expect(show_host_set_audience_hud_state(handle, &input) && host->hud.state.load() == published,
+            "same visible content keeps the snapshot despite a newer transport revision");
         name[0] = title[0] = current[0] = L'X';
         expect(host->hud.state.load()->network_name == L"test network"
             && host->hud.state.load()->queue[0].title == L"next song"
@@ -280,8 +440,14 @@ int main(int argc, char** argv) {
         show_host_set_lan_state_callback(handle, +[](void* context, std::uint64_t, bool) {
             static_cast<std::atomic<int>*>(context)->fetch_add(1);
         }, &notifications);
+        const auto network_revision = host->hud.lan_revision.load();
         SendMessageW(host->window, kHostLanChangedMessage, 0, 0);
-        expect(notifications.load() > 0, "OS events are dispatched through the Host thread");
+        expect(notifications.load() == 0 && host->hud.lan_revision.load() == network_revision
+            && host->hud.qr.load()->network_revision == network_revision,
+            "unchanged OS notifications do not invalidate QR or notify App again");
+        auto obsolete = std::make_shared<HostHudQrImage>(*host->hud.qr.load());
+        obsolete->network_revision = network_revision - 1;
+        host->hud.qr.store(std::move(obsolete));
         expect(host->hud.qr.load()->network_revision != host->hud.lan_revision.load(),
             "old QR stays gated until App confirms current network image");
         expect(show_host_set_phone_order_qr_image(handle, &qr)

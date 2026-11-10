@@ -21,6 +21,10 @@ HostHudPresentation HostHudController::update(const HostHudClockInput& in) {
         last_duration_ = in.duration; was_advancing_ = in.advancing; initialized_ = true;
     };
     if (!in.active) {
+        if (in.holding_previous_output) {
+            last_now_ = in.monotonic_seconds; was_advancing_ = false;
+            return presentation();
+        }
         takeover_remaining_ = tail_remaining_ = 0; tail_triggered_ = false;
         discontinuity_ = in.discontinuity_revision;
         remember(); return presentation();
@@ -85,8 +89,6 @@ HostHudAppearance HostHudTransition::update(const HostHudTransitionInput& in) {
             : scene == HostHudScene::queue ? in.queue_available : true;
     };
     const auto desired = allowed(in.desired) ? in.desired : HostHudScene::hidden;
-    const bool new_program = in.program_instance != program_ && in.program_instance != 0;
-    program_ = in.program_instance;
     auto view = evaluate(now);
     // Manual disable and loss of LAN must remove an ineligible old card now,
     // even if a cross-scene fade-out was in progress.
@@ -105,7 +107,7 @@ HostHudAppearance HostHudTransition::update(const HostHudTransitionInput& in) {
         started_ = now;
         if (current_ == HostHudScene::hidden) {
             current_ = desired;
-            phase_ = Phase::fade_in;
+            phase_ = desired == HostHudScene::qr ? Phase::steady : Phase::fade_in;
             from_opacity_ = 0;
         } else if (current_ == desired) {
             phase_ = Phase::fade_in;
@@ -114,10 +116,6 @@ HostHudAppearance HostHudTransition::update(const HostHudTransitionInput& in) {
             phase_ = Phase::fade_out;
             from_opacity_ = view.opacity;
         }
-    } else if (new_program && desired == HostHudScene::queue && phase_ == Phase::steady) {
-        phase_ = Phase::fade_in;
-        started_ = now;
-        from_opacity_ = 0;
     }
     return evaluate(now);
 }

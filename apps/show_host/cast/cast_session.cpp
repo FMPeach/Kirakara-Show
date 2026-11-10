@@ -123,7 +123,8 @@ static const HostHudFrame& render_cast_hud(CastSession& cast, const CastProgramS
             cast_monotonic_seconds(), active,
             state_value == SHOW_STATE_PLAYING && !cast.program.published_buffering->load()
                 && !lifecycle.start_gate_pending,
-            cast.lifecycle.program_ready_for(program->video_timeline_revision)});
+            cast.lifecycle.program_ready_for(program->video_timeline_revision),
+            lifecycle.holding_previous_output || cast.load_keepalive_active.load()});
     }
     return cast.hud_renderer.render(cast.stage_renderer.native_d3d_device(),
         canvas.width, canvas.height, state.get(), qr, lan, presentation);

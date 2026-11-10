@@ -2,6 +2,8 @@
 #include "host_hud_svg_icons.h"
 #include "kirakara/show/win32/d3d11_texture_surface.hpp"
 #include <d2d1_1.h>
+#include <d3d11.h>
+#include <dxgi.h>
 #include <dwrite.h>
 #include <wincodec.h>
 #include <wrl/client.h>
@@ -27,6 +29,80 @@ struct HostHudRenderer::Impl {
     HostHudFrame frame;
     HostHudTransition transition;
     bool cached{}, ready{}, queue_mode{}, network_wifi{};
+    ComPtr<ID3D11Texture2D> previous_queue_texture;
+    ComPtr<ID2D1Bitmap1> previous_queue, next_queue;
+    double queue_blend_started{};
+    float queue_blend_fraction{-1};
+    bool queue_blending{};
+
+    bool capture_queue() {
+        previous_queue.Reset();
+        auto* source = static_cast<ID3D11Texture2D*>(surface.native_texture());
+        if (!source) return false;
+        D3D11_TEXTURE2D_DESC desc{}, previous_desc{};
+        source->GetDesc(&desc);
+        if (previous_queue_texture) previous_queue_texture->GetDesc(&previous_desc);
+        auto* d3d = static_cast<ID3D11Device*>(device);
+        if (!previous_queue_texture || previous_desc.Width != desc.Width || previous_desc.Height != desc.Height) {
+            previous_queue_texture.Reset();
+            desc.MiscFlags = 0;
+            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+            if (FAILED(d3d->CreateTexture2D(&desc, nullptr, &previous_queue_texture))) return false;
+        }
+        ComPtr<ID3D11DeviceContext> context;
+        d3d->GetImmediateContext(&context);
+        surface.flush_d2d();
+        context->CopyResource(previous_queue_texture.Get(), source);
+        return true;
+    }
+    bool begin_queue_blend(ID2D1DeviceContext* context, double now) {
+        ComPtr<IDXGISurface> previous_surface;
+        const auto properties = D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_NONE,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+        if (FAILED(previous_queue_texture.As(&previous_surface))
+                || FAILED(context->CreateBitmapFromDxgiSurface(previous_surface.Get(), &properties, &previous_queue))) return false;
+        if (next_queue && (next_queue->GetPixelSize().width != surface.width()
+                || next_queue->GetPixelSize().height != surface.height())) next_queue.Reset();
+        if (!next_queue && FAILED(context->CreateBitmap(D2D1::SizeU(surface.width(), surface.height()),
+                nullptr, 0, &properties, &next_queue))) return false;
+        if (FAILED(next_queue->CopyFromRenderTarget(nullptr, context, nullptr))) return false;
+        queue_blend_started = now; queue_blend_fraction = -1;
+        queue_blending = true;
+        return true;
+    }
+    bool blend_queue(ID2D1DeviceContext* context, float scale, float fraction) {
+        // Only the row area changes. The card, heading and progress stripe stay
+        // opaque. Both row images are cached; no text layout runs on these ticks.
+        const auto rows = D2D1::RectF(std::round(21 * scale), std::round(80 * scale),
+            std::round(479 * scale), surface.height() - std::round(22 * scale));
+        const auto previous_size = previous_queue->GetPixelSize();
+        const auto blend = context->GetPrimitiveBlend();
+        surface.begin_draw();
+        context->SetTransform(D2D1::Matrix3x2F::Identity());
+        context->PushAxisAlignedClip(rows, D2D1_ANTIALIAS_MODE_ALIASED);
+        context->SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_COPY);
+        brush->SetColor(D2D1::ColorF(14 / 255.0F, 18 / 255.0F, 26 / 255.0F, .94F * (1 - fraction)));
+        context->FillRectangle(rows, brush.Get());
+        // A shorter old card has its own rounded footer. Keep that footer out
+        // of newly added rows when the list grows.
+        context->PushAxisAlignedClip(D2D1::RectF(rows.left, rows.top, rows.right,
+            previous_size.height - std::round(22 * scale)), D2D1_ANTIALIAS_MODE_ALIASED);
+        context->DrawBitmap(previous_queue.Get(), D2D1::RectF(0, 0,
+            static_cast<float>(previous_size.width), static_cast<float>(previous_size.height)),
+            1 - fraction, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+        context->PopAxisAlignedClip();
+        context->SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_ADD);
+        context->DrawBitmap(next_queue.Get(), D2D1::RectF(0, 0,
+            static_cast<float>(surface.width()), static_cast<float>(surface.height())),
+            fraction, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+        context->PopAxisAlignedClip();
+        context->SetPrimitiveBlend(blend);
+        if (!surface.end_draw()) return false;
+        surface.flush_d2d();
+        queue_blend_fraction = fraction;
+        ++frame.revision;
+        return true;
+    }
 
     bool load_qr(ID2D1DeviceContext* context, const HostHudQrImage& input) {
         qr.Reset();
@@ -75,7 +151,11 @@ struct HostHudRenderer::Impl {
 };
 HostHudRenderer::HostHudRenderer() : impl_(std::make_unique<Impl>()) {}
 HostHudRenderer::~HostHudRenderer() = default;
-void HostHudRenderer::reset() { impl_ = std::make_unique<Impl>(); }
+void HostHudRenderer::reset() {
+    const auto transition = impl_->transition;
+    impl_ = std::make_unique<Impl>();
+    impl_->transition = transition;
+}
 std::uint64_t HostHudRenderer::rasterizations() const noexcept { return impl_->draws; }
 std::uint64_t HostHudRenderer::progress_updates() const noexcept { return impl_->progress_draws; }
 const HostHudFrame& HostHudRenderer::render(void* device, std::uint32_t width,
@@ -103,23 +183,32 @@ const HostHudFrame& HostHudRenderer::render(void* device, std::uint32_t width,
     const auto card_h = static_cast<std::uint32_t>(std::ceil(logical_height * scale));
     const bool resized = p.device != device || p.width != width || p.height != height
         || p.surface.width() != card_w || p.surface.height() != card_h;
+    const bool same_image = p.image && image && p.image->revision == image->revision
+        && p.image->pixel_size == image->pixel_size && p.image->modules == image->modules;
+    const bool image_changed = resized || !same_image;
+    const bool queue_changed = queue_mode && (p.queue != state->queue || p.current != state->current);
     const bool changed = resized || !p.cached || p.queue_mode != queue_mode
-        || (queue_mode ? p.queue != state->queue || p.current != state->current
-            : p.image != image || p.network != state->network_name
+        || (queue_mode ? queue_changed
+            : !same_image || p.network != state->network_name
             || p.network_wifi != state->network_wifi);
+    const bool blend_queue = queue_changed && p.ready && p.cached && p.queue_mode
+        && desired == HostHudScene::queue && !appearance.animating && appearance.opacity == 1
+        && presentation.transitions_enabled && std::isfinite(presentation.monotonic_seconds)
+        && p.device == device && p.width == width && p.height == height && p.capture_queue();
     p.frame.x = width - std::min(width, card_w + static_cast<std::uint32_t>(std::round(50 * scale)));
     p.frame.y = static_cast<std::uint32_t>(std::round(40 * scale));
     p.frame.width = card_w; p.frame.height = card_h;
     if (changed) {
+        p.queue_blending = false;
         p.ready = false;
         if (resized) {
             p.qr.Reset(); p.qr_clip.Reset(); p.brush.Reset(); p.icons.reset();
+            p.previous_queue.Reset(); p.next_queue.Reset();
             p.surface = {};
             if (!p.surface.resize_on_device(device, card_w, card_h)) return p.frame;
             p.device = device; p.width = width; p.height = height;
         }
         auto* context = static_cast<ID2D1DeviceContext*>(p.surface.native_render_target());
-        const bool image_changed = resized || p.image != image;
         p.queue_mode = queue_mode; p.cached = true; p.progress_pixels = -1;
         if (queue_mode) { p.queue = state->queue; p.current = state->current; }
         else {
@@ -184,9 +273,10 @@ const HostHudFrame& HostHudRenderer::render(void* device, std::uint32_t width,
                 draw_row(p.queue[i], i + (has_current ? 1 : 0), L"0" + std::to_wstring(i + 1), false);
             }
             if (p.queue.empty()) {
-                const auto y = 104.0F + (has_current ? 70.0F : 0.0F);
+                const auto y = 84.0F + (has_current ? 70.0F : 0.0F);
                 brush->SetColor(D2D1::ColorF(148 / 255.0F, 163 / 255.0F, 184 / 255.0F));
-                p.text(context, brush.Get(), L"待播队列为空，扫码抢麦", 16, D2D1::RectF(36, y, 478, y + 39));
+                p.text(context, brush.Get(), L"暂无待播歌曲，扫码点歌", 16, D2D1::RectF(22, y, 478, y + 60),
+                    DWRITE_FONT_WEIGHT_NORMAL, true);
             }
         } else {
             context->SetTransform(D2D1::Matrix3x2F::Translation(0, -4)
@@ -225,6 +315,7 @@ const HostHudFrame& HostHudRenderer::render(void* device, std::uint32_t width,
         ++p.draws; ++p.frame.revision;
         p.ready = true;
     }
+    if (!queue_mode) p.image = image;
     if (queue_mode && p.ready) {
         const auto track_width = std::round(456 * scale);
         const auto pixels = static_cast<int>(std::round(track_width * std::clamp(presentation.progress, 0.0F, 1.0F)));
@@ -243,6 +334,26 @@ const HostHudFrame& HostHudRenderer::render(void* device, std::uint32_t width,
             p.surface.flush_d2d(); p.progress_pixels = pixels;
             ++p.progress_draws; ++p.frame.revision;
         }
+    }
+    if (blend_queue && p.ready) {
+        if (!p.begin_queue_blend(static_cast<ID2D1DeviceContext*>(p.surface.native_render_target()),
+                presentation.monotonic_seconds)) return p.frame;
+    }
+    if (p.queue_blending && (!queue_mode || desired != HostHudScene::queue || !presentation.transitions_enabled)) {
+        if (queue_mode && !p.blend_queue(static_cast<ID2D1DeviceContext*>(p.surface.native_render_target()), scale, 1)) {
+            p.cached = false; return p.frame;
+        }
+        p.queue_blending = false;
+    }
+    if (p.queue_blending) {
+        const auto fraction = static_cast<float>(std::clamp(
+            (presentation.monotonic_seconds - p.queue_blend_started) / .150, 0.0, 1.0));
+        if (fraction != p.queue_blend_fraction
+                && !p.blend_queue(static_cast<ID2D1DeviceContext*>(p.surface.native_render_target()), scale, fraction)) {
+            p.cached = false; return p.frame;
+        }
+        p.queue_blending = fraction < 1;
+        p.frame.animating = p.frame.animating || p.queue_blending;
     }
     p.frame.texture = p.surface.native_texture();
     p.frame.visible = p.ready && p.frame.texture != nullptr && p.frame.opacity > 0;

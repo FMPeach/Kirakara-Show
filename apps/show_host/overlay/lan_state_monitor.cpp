@@ -8,12 +8,15 @@
 #include <cwctype>
 #include <string>
 #include <vector>
+#include <utility>
 
 struct LanStateMonitor::Impl {
     std::atomic<HWND> window{};
     std::atomic<bool> pending{};
     UINT message{};
     HANDLE interfaces{}, addresses{};
+    std::vector<std::pair<std::uint64_t, std::uint32_t>> lan_addresses;
+    std::uint64_t revision{};
     void notify() noexcept {
         const auto hwnd = window.load();
         if (hwnd && !pending.exchange(true) && !PostMessageW(hwnd, message, 0, 0)) pending.store(false);
@@ -74,17 +77,25 @@ std::optional<bool> LanStateMonitor::refresh() {
             GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
             nullptr, adapters, &size);
     }
-    if (result == ERROR_NO_DATA) return false;
-    if (result != NO_ERROR) return std::nullopt;
-    for (auto* adapter = adapters; adapter; adapter = adapter->Next) {
+    if (result != NO_ERROR && result != ERROR_NO_DATA) return std::nullopt;
+    std::vector<std::pair<std::uint64_t, std::uint32_t>> lan_addresses;
+    for (auto* adapter = result == NO_ERROR ? adapters : nullptr; adapter; adapter = adapter->Next) {
         if (!usable_adapter(adapter->FriendlyName ? adapter->FriendlyName : L"",
                 adapter->IfType, adapter->OperStatus == IfOperStatusUp)) continue;
         for (auto* address = adapter->FirstUnicastAddress; address; address = address->Next) {
             if (!address->Address.lpSockaddr || address->Address.lpSockaddr->sa_family != AF_INET
                     || address->DadState == IpDadStateDuplicate || address->DadState == IpDadStateTentative) continue;
             const auto* ipv4 = reinterpret_cast<const sockaddr_in*>(address->Address.lpSockaddr);
-            if (usable_ipv4(ntohl(ipv4->sin_addr.s_addr))) return true;
+            const auto ip = ntohl(ipv4->sin_addr.s_addr);
+            if (usable_ipv4(ip)) lan_addresses.emplace_back(adapter->Luid.Value, ip);
         }
     }
-    return false;
+    std::sort(lan_addresses.begin(), lan_addresses.end());
+    lan_addresses.erase(std::unique(lan_addresses.begin(), lan_addresses.end()), lan_addresses.end());
+    if (!impl_->revision || impl_->lan_addresses != lan_addresses) {
+        impl_->lan_addresses = std::move(lan_addresses);
+        ++impl_->revision;
+    }
+    return !impl_->lan_addresses.empty();
 }
+std::uint64_t LanStateMonitor::revision() const noexcept { return impl_->revision; }

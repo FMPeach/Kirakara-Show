@@ -12,6 +12,7 @@ public:
     void start(void* window, std::uint32_t message);
     void stop() noexcept;
     std::optional<bool> refresh();
+    std::uint64_t revision() const noexcept;
     static bool usable_ipv4(std::uint32_t host_order) noexcept;
     static bool usable_adapter(std::wstring_view name, std::uint32_t type, bool up);
 private:

@@ -16,6 +16,7 @@ struct HostHudOptions {
     bool qr_enabled{};
     bool queue_enabled{};
     bool announcement_enabled{};
+    bool operator==(const HostHudOptions&) const = default;
 };
 
 // An App-produced PNG, including its quiet zone. modules describes the whole
@@ -51,6 +52,11 @@ struct HostHudState {
     bool network_wifi{};
     std::vector<HostHudQueueItem> queue;
     HostHudQueueItem current;
+
+    [[nodiscard]] bool same_content(const HostHudState& other) const noexcept {
+        return options == other.options && network_name == other.network_name
+            && network_wifi == other.network_wifi && queue == other.queue && current == other.current;
+    }
 
     [[nodiscard]] bool valid() const noexcept {
         if ((qr && !qr->valid()) || network_name.size() > kHostHudMaxTextUnits

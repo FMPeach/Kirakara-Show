@@ -56,6 +56,24 @@ int main() {
     in.active = false; in.monotonic_seconds = 222;
     expect(!controller.update(in).queue_visible, "idle restores QR phase");
 
+    HostHudController handoff;
+    HostHudClockInput held{1, 0, 0, 100, 0, true, true, true};
+    handoff.update(held);
+    held.position = 4; held.monotonic_seconds = 4; handoff.update(held);
+    held.position = 90; held.monotonic_seconds = 90;
+    expect(handoff.update(held).queue_visible, "handoff fixture reaches tail list");
+    held.active = held.advancing = held.taken_over = false;
+    held.holding_previous_output = true; held.position = held.duration = 0;
+    held.monotonic_seconds = 120;
+    expect(handoff.update(held).queue_visible, "loading keeps the held list even before media is published");
+    held.program_instance = 2; held.active = true; held.duration = 100;
+    expect(handoff.update(held).queue_visible, "pending next program does not briefly restore QR");
+    held.holding_previous_output = false; held.taken_over = held.advancing = true;
+    held.monotonic_seconds = 121;
+    expect(handoff.update(held).queue_visible, "new program takes over in the existing list");
+    held.position = 3; held.monotonic_seconds = 124;
+    expect(!handoff.update(held).queue_visible, "only completed takeover window restores QR");
+
     HostHudController unknown;
     in = {1, 0, 0, 0, 0, true, true, true}; unknown.update(in);
     in.position = 80; in.monotonic_seconds = 80;
@@ -82,9 +100,9 @@ int main() {
     visual.monotonic_seconds = 1.3; view = transition.update(visual);
     expect(view.opacity == 1 && !view.animating, "cross-scene transition ends at 300ms");
     visual.program_instance = 2; visual.monotonic_seconds = 2;
-    near(transition.update(visual).opacity, 0, "actual song takeover starts a 150ms list fade-in");
+    near(transition.update(visual).opacity, 1, "song identity alone cannot zero a visible list");
     visual.monotonic_seconds = 2.075;
-    near(transition.update(visual).opacity, .5F, "same-scene takeover halfway");
+    near(transition.update(visual).opacity, 1, "same-scene takeover keeps the card opaque");
     visual.monotonic_seconds = 2.15;
     expect(!transition.update(visual).animating, "takeover fade stops at 150ms");
     for (int i = 0; i < 100; ++i)
@@ -112,5 +130,20 @@ int main() {
     visual.monotonic_seconds = 5.15; view = transition.update(visual);
     expect(view.scene == HostHudScene::hidden && !view.animating,
         "list-to-empty fade ends in 150ms without an empty fade-in");
+
+    HostHudTransition qr_transition;
+    visual = {HostHudScene::qr, 1, 0, true};
+    view = qr_transition.update(visual);
+    expect(view.opacity == 1 && !view.animating, "QR appears without a hidden-to-visible re-fade");
+    for (int i = 1; i <= 100; ++i) {
+        visual.program_instance = i; visual.monotonic_seconds = i;
+        view = qr_transition.update(visual);
+        expect(view.opacity == 1 && !view.animating, "all QR metadata and program updates stay opaque");
+    }
+    visual.qr_available = false;
+    expect(qr_transition.update(visual).scene == HostHudScene::hidden, "actual disconnection hides QR immediately");
+    visual.qr_available = true;
+    view = qr_transition.update(visual);
+    expect(view.opacity == 1 && !view.animating, "network image confirmation never replays QR fade-in");
     std::cout << "HUD takeover, seek/replay, pause, tail and idle rules passed.\n";
 }

@@ -283,6 +283,8 @@ SHOW_HOST_API bool show_host_set_audience_hud_state(ShowHostHandle handle,
             if (!copy_text(input->queue[i].title, state->queue[i].title)
                     || !copy_text(input->queue[i].artist, state->queue[i].artist)) return false;
         }
+        const auto previous = host->hud.state.load();
+        if (previous && previous->same_content(*state)) return true;
         host->hud.state.store(std::move(state));
         request_host_hud_refresh(*host);
         return true;
