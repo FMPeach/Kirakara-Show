@@ -17,6 +17,52 @@ typedef void* ShowHostHandle;
 typedef void* ShowHostStageTextureSource;
 typedef void* ShowHostStageVisualSource;
 
+enum {
+    SHOW_HOST_AUDIENCE_HUD_ABI_VERSION = 1,
+    SHOW_HOST_HUD_QR_ENABLED = 1,
+    SHOW_HOST_HUD_QUEUE_ENABLED = 2,
+    SHOW_HOST_HUD_ANNOUNCEMENT_ENABLED = 4,
+};
+typedef struct ShowHostHudQueueItem {
+    const wchar_t* title;
+    const wchar_t* artist;
+} ShowHostHudQueueItem;
+typedef struct ShowHostAudienceHudState {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t flags;
+    uint32_t queue_count;
+    uint64_t revision;
+    const wchar_t* network_name;
+    const ShowHostHudQueueItem* queue;
+} ShowHostAudienceHudState;
+typedef struct ShowHostPhoneOrderQrImage {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint64_t revision;
+    uint32_t pixel_size;
+    uint32_t modules; // Includes App-provided quiet zone; used only for bitmap scaling.
+    const uint8_t* png;
+    uint32_t png_size;
+    uint32_t reserved;
+} ShowHostPhoneOrderQrImage;
+typedef struct ShowHostLanState {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint64_t revision;
+    uint32_t available;
+    uint32_t reserved;
+} ShowHostLanState;
+// Low-frequency control-thread event. Unregistering is synchronous; callbacks
+// must return promptly. Data arguments are values, with no borrowed pointers.
+typedef void (*ShowHostLanStateCallback)(void* context, uint64_t revision, bool available);
+// Borrowed input buffers/strings are copied before these setters return.
+// A null QR image clears it. The old Overlay ABI remains independent.
+SHOW_HOST_API bool show_host_set_audience_hud_state(ShowHostHandle, const ShowHostAudienceHudState*);
+SHOW_HOST_API bool show_host_set_phone_order_qr_image(ShowHostHandle, const ShowHostPhoneOrderQrImage*);
+SHOW_HOST_API bool show_host_get_lan_state(ShowHostHandle, ShowHostLanState*);
+SHOW_HOST_API void show_host_set_lan_state_callback(ShowHostHandle, ShowHostLanStateCallback, void*);
+
 typedef void (*ShowHostStageTextureFrameAvailableCallback)(
     void* user_data,
     uintptr_t shared_handle,

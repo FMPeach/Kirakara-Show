@@ -478,6 +478,7 @@ void reset_unified_stage_device_pipeline(
     host.native_stage.standby_prepare_started_qpc = 0;
     host.native_stage.decoded_frame_identity_valid = false;
     release_unified_native_stage_frames(host);
+    release_physical_hud(host);
     host.native_stage.unified_stage_presenter.shutdown();
     host.native_stage.idle_background.reset();
     host.native_stage.unified_stage_renderer.retire();

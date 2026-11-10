@@ -34,6 +34,10 @@ constexpr UINT kCastMediaEndedMessage = WM_APP + 120;
 constexpr UINT kCastFatalErrorMessage = WM_APP + 121;
 constexpr UINT kHostIdleBackgroundImageMessage = WM_APP + 122;
 constexpr UINT kHostIdleStageRefreshMessage = WM_APP + 123;
+constexpr UINT kHostHudStateMessage = WM_APP + 124;
+constexpr UINT kHostHudQrMessage = WM_APP + 125;
+constexpr UINT kHostLanChangedMessage = WM_APP + 126;
+constexpr UINT kHostLanCallbackMessage = WM_APP + 127;
 
 // ── Dimensions ───────────────────────────────────────────────────
 

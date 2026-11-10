@@ -220,11 +220,13 @@ if(WIN32)
         PUBLIC Kirakara::ShowWin32 PRIVATE d3d11 windowscodecs ole32 uuid)
 
     add_library(kirakara_show_host_hud STATIC
-        apps/show_host/overlay/physical_hud_output.cpp)
+        apps/show_host/overlay/physical_hud_output.cpp
+        apps/show_host/overlay/host_hud_renderer.cpp
+        apps/show_host/overlay/lan_state_monitor.cpp)
     target_compile_features(kirakara_show_host_hud PRIVATE cxx_std_20)
     target_compile_definitions(kirakara_show_host_hud PRIVATE NOMINMAX)
     target_link_libraries(kirakara_show_host_hud
-        PUBLIC Kirakara::ShowWin32 PRIVATE dcomp d3d11 dxgi ole32 uuid)
+        PUBLIC Kirakara::ShowWin32 PRIVATE dcomp d3d11 dxgi dwrite windowscodecs iphlpapi ws2_32 ole32 uuid)
 
     add_executable(kirakara_show_demo WIN32 apps/win32_demo/main.cpp)
     target_compile_features(kirakara_show_demo PRIVATE cxx_std_20)
@@ -596,6 +598,7 @@ if(WIN32)
 
     # ── show_host DLL for Flutter embedding ──
     add_library(show_host SHARED
+        apps/show_host/overlay/host_hud.cpp
         apps/show_host/show_host_api.cpp
         apps/show_host/host/host_utils.cpp
         apps/show_host/host/host_layout.cpp
@@ -644,7 +647,7 @@ if(WIN32)
             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party>
             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party/signalsmith-stretch>)
     target_link_libraries(show_host PRIVATE
-        kirakara_show_host_idle_background d2d1 d3d11 dxgi dwrite mf mfplat mfreadwrite mfuuid
+        kirakara_show_host_idle_background kirakara_show_host_hud d2d1 d3d11 dxgi dwrite mf mfplat mfreadwrite mfuuid
         advapi32 ole32 oleaut32 quartz shlwapi strmiids uuid winmm dsound
         ws2_32)
     if(MINGW)
@@ -703,6 +706,17 @@ if(WIN32)
         # Headless host-contract checks: playback command semantics, the output
         # lease side effects and the runtime half of the C ABI (struct sizes).
         # No media, no window and no GPU required, so this runs everywhere.
+        add_executable(kirakara_show_audience_hud_tests tests/show_host_audience_hud_tests.cpp)
+        target_compile_features(kirakara_show_audience_hud_tests PRIVATE cxx_std_20)
+        target_compile_definitions(kirakara_show_audience_hud_tests PRIVATE UNICODE _UNICODE NOMINMAX)
+        target_include_directories(kirakara_show_audience_hud_tests PRIVATE third_party third_party/signalsmith-stretch)
+        target_link_libraries(kirakara_show_audience_hud_tests PRIVATE show_host kirakara_show_host_hud ole32)
+        if(MINGW)
+            target_link_options(kirakara_show_audience_hud_tests PRIVATE -static -static-libgcc -static-libstdc++)
+        endif()
+        set_target_properties(kirakara_show_audience_hud_tests PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+        add_test(NAME kirakara_show_audience_hud_tests COMMAND kirakara_show_audience_hud_tests)
+
         add_executable(kirakara_show_host_lifecycle_tests
             tests/show_host_lifecycle_tests.cpp)
         target_compile_features(kirakara_show_host_lifecycle_tests

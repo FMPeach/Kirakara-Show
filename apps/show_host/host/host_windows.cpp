@@ -225,6 +225,29 @@ LRESULT CALLBACK stage_proc(
                 && !has_ts_stage_output(*host)) {
             render_unified_native_stage(*host);
         }
+        if (host) render_physical_hud(*host);
+        return 0;
+    case kHostHudStateMessage:
+        if (!host || !lparam) return FALSE;
+        host->hud.state.store(
+            *reinterpret_cast<std::shared_ptr<const HostHudState>*>(lparam));
+        render_physical_hud(*host);
+        return TRUE;
+    case kHostHudQrMessage:
+        if (!host || !lparam) return FALSE;
+        host->hud.qr.store(
+            *reinterpret_cast<std::shared_ptr<const HostHudQrImage>*>(lparam));
+        render_physical_hud(*host);
+        return TRUE;
+    case kHostLanChangedMessage:
+        if (host) refresh_host_lan_state(*host);
+        return 0;
+    case kHostLanCallbackMessage:
+        if (host && lparam) {
+            const auto& request = *reinterpret_cast<HostHudCallbackRequest*>(lparam);
+            host->hud.callback = request.callback;
+            host->hud.callback_context = request.context;
+        }
         return 0;
     case kHostStageOverlayStateMessage:
         return host && lparam
@@ -455,6 +478,10 @@ void stage_thread_main(ShowHost* host) {
         }
     }
 
+    if (!host->thread.startup_failed && host->window) {
+        host->hud.network.start(host->window, kHostLanChangedMessage);
+        refresh_host_lan_state(*host);
+    }
     {
         std::lock_guard lock(host->thread.ready_mutex);
         host->thread.ready = true;
@@ -482,6 +509,7 @@ void stage_thread_main(ShowHost* host) {
             const auto now = std::chrono::steady_clock::now();
             if (now >= next_render_due) {
                 render_idle_frame(*host);
+                render_physical_hud(*host);
                 next_render_due += kStageRenderInterval;
                 const auto completed = std::chrono::steady_clock::now();
                 std::uint64_t missed_slots{};
@@ -525,6 +553,9 @@ void stage_thread_main(ShowHost* host) {
         }
     }
 
+    host->hud.network.stop();
+    host->hud.callback = nullptr;
+    release_physical_hud(*host);
     handle_stop_cast_stream(*host);
     host->native_stage.stage_video_decoder.stop();
     host->native_stage.stage_video_decoder_started = false;

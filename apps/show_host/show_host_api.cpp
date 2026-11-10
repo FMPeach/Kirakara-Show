@@ -30,6 +30,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <cstdio>
 #include <memory>
 #include <new>
@@ -251,6 +252,83 @@ int32_t get_stage_visual_source_stats(
 }  // namespace
 
 extern "C" {
+
+SHOW_HOST_API bool show_host_set_audience_hud_state(ShowHostHandle handle,
+        const ShowHostAudienceHudState* input) {
+    auto* host = as_host(handle);
+    if (!host || !host->window || !input
+            || input->struct_size != sizeof(*input)
+            || input->abi_version != kHostHudAbiVersion || (input->flags & ~7U)
+            || input->queue_count > kHostHudMaxQueueItems
+            || (input->queue_count && !input->queue)) return false;
+    try {
+        auto state = std::make_shared<HostHudState>();
+        const auto copy_text = [](const wchar_t* source, std::wstring& target) {
+            if (!source) return true;
+            const auto length = wcsnlen(source, kHostHudMaxTextUnits + 1);
+            if (length > kHostHudMaxTextUnits) return false;
+            target.assign(source, length);
+            return true;
+        };
+        state->revision = input->revision;
+        state->options = {(input->flags & 1U) != 0, (input->flags & 2U) != 0, (input->flags & 4U) != 0};
+        if (!copy_text(input->network_name, state->network_name)) return false;
+        state->queue.resize(input->queue_count);
+        for (std::size_t i = 0; i < state->queue.size(); ++i) {
+            if (!copy_text(input->queue[i].title, state->queue[i].title)
+                    || !copy_text(input->queue[i].artist, state->queue[i].artist)) return false;
+        }
+        std::shared_ptr<const HostHudState> value = std::move(state);
+        return SendMessageW(host->window, kHostHudStateMessage, 0,
+            reinterpret_cast<LPARAM>(&value)) != FALSE;
+    } catch (...) { return false; }
+}
+
+SHOW_HOST_API bool show_host_set_phone_order_qr_image(ShowHostHandle handle,
+        const ShowHostPhoneOrderQrImage* input) {
+    auto* host = as_host(handle);
+    if (!host || !host->window) return false;
+    try {
+        std::shared_ptr<const HostHudQrImage> value;
+        if (input) {
+            static constexpr unsigned char signature[]{137, 80, 78, 71, 13, 10, 26, 10};
+            if (input->struct_size != sizeof(*input) || input->abi_version != kHostHudAbiVersion
+                    || input->reserved || !input->png || input->png_size < sizeof(signature)
+                    || input->png_size > kHostHudMaxQrBytes || !input->revision
+                    || !input->pixel_size || input->pixel_size > kHostHudMaxQrPixels
+                    || !input->modules || input->modules > kHostHudMaxQrModules
+                    || input->pixel_size % input->modules != 0
+                    || std::memcmp(input->png, signature, sizeof(signature)) != 0) return false;
+            const auto previous = host->hud.qr.load();
+            if (previous && previous->revision == input->revision
+                    && previous->pixel_size == input->pixel_size && previous->modules == input->modules) return true;
+            auto image = std::make_shared<HostHudQrImage>();
+            image->revision = input->revision; image->pixel_size = input->pixel_size;
+            image->modules = input->modules;
+            image->png.assign(input->png, input->png + input->png_size);
+            value = std::move(image);
+        }
+        return SendMessageW(host->window, kHostHudQrMessage, 0,
+            reinterpret_cast<LPARAM>(&value)) != FALSE;
+    } catch (...) { return false; }
+}
+
+SHOW_HOST_API bool show_host_get_lan_state(ShowHostHandle handle, ShowHostLanState* output) {
+    auto* host = as_host(handle);
+    if (!host || !output || output->struct_size != sizeof(*output)
+            || output->abi_version != kHostHudAbiVersion || output->reserved) return false;
+    output->available = host->hud.lan_available.load(std::memory_order_acquire);
+    output->revision = host->hud.lan_revision.load(std::memory_order_acquire);
+    return true;
+}
+
+SHOW_HOST_API void show_host_set_lan_state_callback(ShowHostHandle handle,
+        ShowHostLanStateCallback callback, void* context) {
+    auto* host = as_host(handle);
+    if (!host || !host->window) return;
+    HostHudCallbackRequest request{callback, context};
+    SendMessageW(host->window, kHostLanCallbackMessage, 0, reinterpret_cast<LPARAM>(&request));
+}
 
 SHOW_HOST_API ShowHostHandle show_host_create(void) {
     log_line("--- show_host stage create ---");

@@ -12,6 +12,7 @@
 #include "../stage/native_stage_session.h"
 #include "host_utils.h"
 #include "stage_output_lease.h"
+#include "../overlay/host_hud.h"
 
 #include "kirakara/show/config.hpp"
 #include "kirakara/show/stage_overlay.hpp"
@@ -196,6 +197,7 @@ struct ShowHost {
     NativeStageSession native_stage;
     OutputTransitionRuntime output_transition;
     CastSession cast;
+    HostHudRuntime hud;
 };
 
     [[nodiscard]] inline bool has_physical_stage_output(
