@@ -7,6 +7,7 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <psapi.h>
+#include "hud_test_image.h"
 
 #include <algorithm>
 #include <atomic>
@@ -514,6 +515,21 @@ int wmain(int argc, wchar_t** argv) {
     const auto soak_duration = parse_soak_duration(argc, argv);
     auto host = show_host_create();
     expect(host != nullptr, "create ShowHost");
+    bool test_hud{};
+    for (int i = 9; i < argc; ++i) if (std::wstring_view(argv[i]) == L"--hud") test_hud = true;
+    ShowHostAudienceHudState hud{sizeof(hud), 1, SHOW_HOST_HUD_QR_ENABLED, 0, 1, L"192.168.1.2:7391", nullptr};
+    if (test_hud) {
+        const auto com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        const auto image = make_hud_test_image();
+        expect(image != nullptr, "HUD test PNG");
+        ShowHostPhoneOrderQrImage input{sizeof(input), 1, image->revision, image->pixel_size,
+            image->modules, image->png.data(), static_cast<std::uint32_t>(image->png.size()), 0};
+        expect(show_host_set_phone_order_qr_image(host, &input) && show_host_set_audience_hud_state(host, &hud),
+            "configure audience HUD");
+        if (SUCCEEDED(com)) CoUninitialize();
+        ShowHostLanState lan{sizeof(lan), 1};
+        expect(show_host_get_lan_state(host, &lan) && lan.available, "HUD test requires an existing usable LAN");
+    }
     ShowHostCastPipelineTraceState initial_trace{};
     initial_trace.struct_size = sizeof(initial_trace);
     expect(show_host_get_cast_pipeline_trace_state(host, &initial_trace)

@@ -1,5 +1,6 @@
 #include "../apps/show_host/host/host_data.h"
 #include "hud_test_image.h"
+#include "../apps/show_host/overlay/host_hud_blitter.h"
 #include <cstdlib>
 #include <iostream>
 
@@ -31,6 +32,26 @@ int main() {
         expect(!renderer.render(device.native_d3d_device(), 1920, 1080, &state, image, true).visible,
             "manual QR switch");
         state.options.qr_enabled = true;
+        {
+            kirakara::show::win32::D3D11TextureSurface target;
+            expect(target.resize_on_device(device.native_d3d_device(), 640, 360), "Cast C target");
+            target.begin_draw(); target.clear({.15F, .25F, .35F, 1});
+            expect(target.end_draw(), "clean C frame");
+            const auto original = target.read_rgba8();
+            auto card = renderer.render(device.native_d3d_device(), 640, 360, &state, image, true);
+            HostHudRetainedBgraLayer layer;
+            bool changed{};
+            expect(layer.apply(target.native_render_target(), card, true, changed) && changed,
+                "Cast C draws cached card over clean base");
+            expect(target.read_rgba8() != original, "card pixels visible in C");
+            for (int i = 0; i < 100; ++i) expect(layer.apply(target.native_render_target(), card, false, changed)
+                && !changed, "retained C frame skips all drawing");
+            expect(layer.captures() == 1, "only one bounded underlay capture");
+            card.visible = false;
+            expect(layer.apply(target.native_render_target(), card, false, changed) && changed,
+                "offline removes card from held frame");
+            expect(target.read_rgba8() == original, "C restores exact underlying program pixels");
+        }
         for (const auto& size : {std::pair{3840U, 2160U}, {1280U, 720U}, {960U, 540U}, {1024U, 576U}, {640U, 360U}}) {
             const auto& scaled = renderer.render(device.native_d3d_device(), size.first, size.second, &state, image, true);
             expect(scaled.visible && scaled.x + scaled.width <= size.first

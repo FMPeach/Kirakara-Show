@@ -15,6 +15,7 @@
 #include "native_cast_backend.h"
 #include "../audio/audio_player.h"
 #include "../media/mf_d3d11_video_decoder.h"
+#include "../overlay/host_hud_blitter.h"
 
 #include "kirakara/show/config.hpp"
 #include "kirakara/show/stage_overlay.hpp"
@@ -59,6 +60,9 @@ struct CastProgramBindings {
     std::atomic<bool>* published_buffering{};
     std::atomic<double>* buffering_position{};
     HWND notification_window{};
+    const std::atomic<std::shared_ptr<const HostHudState>>* hud_state{};
+    const std::atomic<std::shared_ptr<const HostHudQrImage>>* hud_qr{};
+    const std::atomic<bool>* lan_available{};
 
     [[nodiscard]] bool valid() const noexcept;
 };
@@ -75,6 +79,12 @@ struct CastSession {
     kirakara::show::win32::LyricRenderer lyric_renderer;
     kirakara::show::win32::SongTitleRenderer title_renderer;
     CastStageRenderer stage_renderer;
+    HostHudRenderer hud_renderer;
+    HostHudRetainedBgraLayer hud_bgra_layer;
+    std::shared_ptr<const CastNormalizedVideoFrame> last_overlay_base;
+    std::shared_ptr<const CastProgramSnapshot> last_overlay_program;
+    double last_overlay_time{};
+    bool last_overlay_draw_program{};
     std::atomic<std::shared_ptr<const IdleBackgroundSource>> idle_background_source;
     MfD3D11VideoDecoder video_decoder;
     CastVideoFrameNormalizer video_normalizer;

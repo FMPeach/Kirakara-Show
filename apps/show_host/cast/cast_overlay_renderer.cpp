@@ -1,6 +1,7 @@
 #include "cast_overlay_renderer.h"
 
 #include "cast_pipeline_diagnostics.h"
+#include "../overlay/host_hud_blitter.h"
 #include "kirakara/show/timeline.hpp"
 
 #include <algorithm>
@@ -238,6 +239,8 @@ struct CastOverlayRenderer::Impl {
     std::uint64_t last_signature{};
     bool signature_valid{};
     CastOverlayRect previous_coverage;
+    CastOverlayRect previous_hud;
+    HostHudBlitter hud_blitter;
 
     bool clear_transparent() {
         surface.begin_draw();
@@ -288,6 +291,8 @@ struct CastOverlayRenderer::Impl {
         last_signature = 0;
         signature_valid = false;
         previous_coverage = {};
+        previous_hud = {};
+        hud_blitter.reset();
     }
 
     bool render(
@@ -298,7 +303,8 @@ struct CastOverlayRenderer::Impl {
             const kirakara::show::RenderStyle& style,
             std::uint64_t content_revision,
             kirakara::show::win32::LyricRenderer& lyric_renderer,
-            kirakara::show::win32::SongTitleRenderer* title_renderer) {
+            kirakara::show::win32::SongTitleRenderer* title_renderer,
+            const HostHudFrame* hud) {
         if (!frame.texture || frame.width == 0 || frame.height == 0) {
             return false;
         }
@@ -312,17 +318,33 @@ struct CastOverlayRenderer::Impl {
             && kirakara::show::song_title_has_drawable_content(title)
             && title_opacity > 0.0F;
         const bool lyrics_active = frame_has_visible_lyrics(lyric_frame);
-        const bool empty = !title_active && !lyrics_active;
-        const auto signature = overlay_signature(
+        const bool hud_visible = hud && hud->visible;
+        const bool empty = !title_active && !lyrics_active && !hud_visible;
+        auto signature = overlay_signature(
             lyric_frame, title_opacity, title_active, lyrics_active,
             content_revision);
+        hash_value(signature, hud_visible);
+        CastOverlayRect hud_rect;
+        if (hud_visible) {
+            hash_value(signature, hud->revision);
+            hash_value(signature, reinterpret_cast<std::uintptr_t>(hud->texture));
+            hash_value(signature, hud->x); hash_value(signature, hud->y);
+            const auto left = hud->x & ~1U, top = hud->y & ~1U;
+            const auto right = std::min(frame.width, (hud->x + hud->width + 1U) & ~1U);
+            const auto bottom = std::min(frame.height, (hud->y + hud->height + 1U) & ~1U);
+            if (left < right && top < bottom) hud_rect = {left, top, right - left, bottom - top};
+        }
         const auto current_coverage = overlay_coverage(
             lyric_frame, title_active, lyrics_active, title, engine, style,
             frame.width, frame.height);
 
         frame.changed = false;
         frame.dirty_rect = {};
-        frame.coverage_rect = current_coverage;
+        frame.coverage_rect = union_rect(current_coverage, hud_rect);
+        frame.coverage_regions = {};
+        frame.coverage_count = 0;
+        if (!current_coverage.empty()) frame.coverage_regions[frame.coverage_count++] = current_coverage;
+        if (!hud_rect.empty()) frame.coverage_regions[frame.coverage_count++] = hud_rect;
         frame.title_drawn = title_active;
         frame.lyrics_drawn = lyrics_active;
         if (signature_valid && signature == last_signature
@@ -337,9 +359,10 @@ struct CastOverlayRenderer::Impl {
 
         const auto started = diagnostics
             ? CastPipelineDiagnostics::qpc_now() : 0;
-        const auto dirty_rect = union_rect(
-            previous_coverage, current_coverage);
-        if (!clear_transparent(dirty_rect)) {
+        const auto dirty_rect = union_rect(union_rect(previous_coverage, current_coverage),
+            union_rect(previous_hud, hud_rect));
+        if (!clear_transparent(previous_coverage) || !clear_transparent(current_coverage)
+                || !clear_transparent(previous_hud) || !clear_transparent(hud_rect)) {
             signature_valid = false;
             previous_coverage = {0, 0, frame.width, frame.height};
             return false;
@@ -360,6 +383,7 @@ struct CastOverlayRenderer::Impl {
                 return false;
             }
         }
+        if (hud_visible && !hud_blitter.draw(surface.native_render_target(), *hud)) return false;
         surface.flush_d2d();
 
         ++frame.content_version;
@@ -367,6 +391,7 @@ struct CastOverlayRenderer::Impl {
         frame.changed = true;
         frame.dirty_rect = dirty_rect;
         previous_coverage = current_coverage;
+        previous_hud = hud_rect;
         last_signature = signature;
         signature_valid = true;
         if (diagnostics) {
@@ -408,9 +433,10 @@ bool CastOverlayRenderer::render(
         const kirakara::show::RenderStyle& style,
         std::uint64_t content_revision,
         kirakara::show::win32::LyricRenderer& lyric_renderer,
-        kirakara::show::win32::SongTitleRenderer* title_renderer) {
+        kirakara::show::win32::SongTitleRenderer* title_renderer,
+        const HostHudFrame* hud) {
     return impl_ && impl_->render(document, title, current_time,
-        engine, style, content_revision, lyric_renderer, title_renderer);
+        engine, style, content_revision, lyric_renderer, title_renderer, hud);
 }
 
 const CastOverlayFrame& CastOverlayRenderer::frame() const noexcept {

@@ -222,6 +222,7 @@ if(WIN32)
     add_library(kirakara_show_host_hud STATIC
         apps/show_host/overlay/physical_hud_output.cpp
         apps/show_host/overlay/host_hud_renderer.cpp
+        apps/show_host/overlay/host_hud_blitter.cpp
         apps/show_host/overlay/lan_state_monitor.cpp)
     target_compile_features(kirakara_show_host_hud PRIVATE cxx_std_20)
     target_compile_definitions(kirakara_show_host_hud PRIVATE NOMINMAX)
@@ -325,7 +326,7 @@ if(WIN32)
         target_compile_definitions(kirakara_show_cast_overlay_renderer_tests
             PRIVATE UNICODE _UNICODE NOMINMAX)
         target_link_libraries(kirakara_show_cast_overlay_renderer_tests
-            PRIVATE Kirakara::ShowWin32 d2d1 d3d11 ole32)
+            PRIVATE Kirakara::ShowWin32 kirakara_show_host_hud d2d1 d3d11 ole32)
         if(MINGW)
             target_link_options(kirakara_show_cast_overlay_renderer_tests
                 PRIVATE -static -static-libgcc -static-libstdc++)
@@ -665,7 +666,7 @@ if(WIN32)
         target_compile_definitions(kirakara_show_unified_cast_smoke
             PRIVATE UNICODE _UNICODE NOMINMAX)
         target_link_libraries(kirakara_show_unified_cast_smoke
-            PRIVATE show_host ws2_32 psapi)
+            PRIVATE show_host ws2_32 psapi ole32 windowscodecs uuid)
         if(MINGW)
             target_link_options(kirakara_show_unified_cast_smoke
                 PRIVATE -municode -static -static-libgcc -static-libstdc++)

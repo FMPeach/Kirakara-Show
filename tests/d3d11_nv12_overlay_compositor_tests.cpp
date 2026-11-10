@@ -364,6 +364,21 @@ int main() {
             CastPipelineCounter::compute_dispatches) == 6,
         "encoder-ready empty overlay performs no compute dispatch");
     encoder_ready_empty.reset();
+    expect(compositor.prepare_overlay_texture(overlay_surface.native_texture()), "prepare multi-region overlay");
+    clear_overlay(overlay_surface);
+    const CastOverlayRect upper{8, 2, 8, 4}, lower{8, 24, 8, 4}, gap{8, 12, 8, 4};
+    fill_overlay_rect(overlay_surface, upper, {1, 1, 1, 1});
+    fill_overlay_rect(overlay_surface, lower, {1, 1, 1, 1});
+    fill_overlay_rect(overlay_surface, gap, {1, 1, 1, 1});
+    auto regions = overlay_frame(overlay_surface, {0, 0, kWidth, kHeight}, 100);
+    regions.coverage_regions = {upper, lower}; regions.coverage_count = 2;
+    auto split_output = compositor.compose(input, regions, 7);
+    expect(static_cast<bool>(split_output), "disjoint coverage compose");
+    pixels = read_nv12(device, context, static_cast<ID3D11Texture2D*>(split_output->texture));
+    expect_near(luma(pixels, 10, 3), 235, 2, "upper region blended");
+    expect_near(luma(pixels, 10, 25), 235, 2, "lower region blended");
+    expect(luma(pixels, 10, 13) == 64, "gap is never dispatched");
+    split_output.reset();
     compositor.reset();
     overlay_surface = {};
     base_lease.reset();

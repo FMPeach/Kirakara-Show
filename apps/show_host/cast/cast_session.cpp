@@ -104,6 +104,32 @@ void* active_cast_stage_texture(CastSession& cast) {
     return cast.stage_renderer.compositor().current_frame().overlay_texture;
 }
 
+static const HostHudFrame& render_cast_hud(CastSession& cast) {
+    const auto state = cast.program.hud_state ? cast.program.hud_state->load() : nullptr;
+    const auto qr = cast.program.hud_qr ? cast.program.hud_qr->load() : nullptr;
+    const bool lan = cast.program.lan_available && cast.program.lan_available->load();
+    const auto canvas = active_cast_canvas(cast);
+    return cast.hud_renderer.render(cast.stage_renderer.native_d3d_device(),
+        canvas.width, canvas.height, state.get(), qr, lan);
+}
+
+static std::shared_ptr<const D3D11Nv12CompositedFrame> compose_cast_nv12_overlays(
+        CastSession& cast, const std::shared_ptr<const CastNormalizedVideoFrame>& base,
+        const CastProgramSnapshot& program, double time, bool draw_program,
+        const HostHudFrame& hud) {
+    static const kirakara::show::PreparedDocument empty_document;
+    static const kirakara::show::SongTitleConfig empty_title;
+    if (!base || !cast.overlay_renderer.render(
+            draw_program ? *program.document : empty_document,
+            draw_program ? program.config->song_title : empty_title,
+            time, program.config->engine, program.config->style,
+            program.video_timeline_revision, cast.lyric_renderer,
+            draw_program && cast.title_renderer_ready ? &cast.title_renderer : nullptr, &hud)) return {};
+    return cast.nv12_overlay_compositor.compose(
+        {base->texture(), base->y_srv(), base->uv_srv(), base->retention_token(),
+            base->frame_id(), base->generation()}, cast.overlay_renderer.frame(), cast.frame_index);
+}
+
 static CastProgramClockUpdate update_cast_program_clock(
         CastExecutionContext& host,
         const MfD3D11VideoBufferStatus& decoder_status,
@@ -1370,9 +1396,18 @@ static void render_cast_compute_nv12_frame(
             || host.cast.lifecycle.program_ready_for(video_revision));
 
     std::shared_ptr<const D3D11Nv12CompositedFrame> candidate;
+    std::shared_ptr<const CastNormalizedVideoFrame> candidate_base;
     bool candidate_is_current_program{};
+    const auto& hud = render_cast_hud(host.cast);
     if (hold_previous_program) {
-        candidate = host.cast.last_nv12_frame;
+        // Keep the old program pixels/time, while allowing new HUD/network
+        // state to replace a card even during starvation or a source handoff.
+        if (host.cast.last_overlay_base && host.cast.last_overlay_program) {
+            candidate = compose_cast_nv12_overlays(host.cast, host.cast.last_overlay_base,
+                *host.cast.last_overlay_program, host.cast.last_overlay_time,
+                host.cast.last_overlay_draw_program, hud);
+        }
+        if (!candidate) candidate = host.cast.last_nv12_frame;
     } else {
         const auto state = host.playback.state.load();
         const bool idle = !host.playback.current_media.loaded
@@ -1384,37 +1419,10 @@ static void render_cast_compute_nv12_frame(
             : idle && host.cast.nv12_background_frame
                 ? host.cast.nv12_background_frame : host.cast.nv12_idle_frame;
         if (base) {
-            static const kirakara::show::PreparedDocument empty_document;
-            static const kirakara::show::SongTitleConfig empty_title;
-            const auto& overlay_document = source_frame_on_time
-                ? host.playback.document : empty_document;
-            const auto& overlay_title = source_frame_on_time
-                ? host.playback.config.song_title : empty_title;
-            auto* title_renderer = source_frame_on_time
-                    && host.cast.title_renderer_ready
-                ? &host.cast.title_renderer : nullptr;
-            if (host.cast.overlay_renderer.render(
-                    overlay_document,
-                    overlay_title,
-                    stage_time,
-                    host.playback.config.engine,
-                    host.playback.config.style,
-                    video_revision,
-                    host.cast.lyric_renderer,
-                    title_renderer)) {
-                candidate = host.cast.nv12_overlay_compositor.compose(
-                    D3D11Nv12OverlayInput{
-                        base->texture(),
-                        base->y_srv(),
-                        base->uv_srv(),
-                        base->retention_token(),
-                        base->frame_id(),
-                        base->generation()},
-                    host.cast.overlay_renderer.frame(),
-                    host.cast.frame_index);
-                candidate_is_current_program = candidate
-                    && source_frame_on_time;
-            }
+            candidate = compose_cast_nv12_overlays(host.cast, base, *host.program,
+                stage_time, source_frame_on_time, hud);
+            candidate_is_current_program = candidate && source_frame_on_time;
+            if (candidate) candidate_base = base;
         }
         // Pool pressure or a device error must not create a transport hole.
         // Reusing the last already-composited NV12 frame is not a backend
@@ -1435,9 +1443,15 @@ static void render_cast_compute_nv12_frame(
             frame_time_100ns,
             frame_duration_100ns,
             request_program_keyframe);
-    if (video_submitted && candidate_is_current_program) {
+    if (video_submitted) {
         host.cast.last_nv12_frame = std::move(candidate);
-        host.cast.lifecycle.mark_program_frame_committed(video_revision);
+        if (candidate_base) {
+            host.cast.last_overlay_base = std::move(candidate_base);
+            host.cast.last_overlay_program = host.program;
+            host.cast.last_overlay_time = stage_time;
+            host.cast.last_overlay_draw_program = source_frame_on_time;
+        }
+        if (candidate_is_current_program) host.cast.lifecycle.mark_program_frame_committed(video_revision);
     }
 
     const auto program_frame_ready = source_frame_on_time
@@ -1688,6 +1702,10 @@ void render_cast_frame(CastSession& cast) {
             (title_overlay_active ? 1 : 0)
                 | (lyric_overlay_active ? 2 : 0));
     }
+    bool hud_changed{};
+    static_cast<void>(host.cast.hud_bgra_layer.apply(compositor.current_frame().overlay_render_target,
+        render_cast_hud(host.cast), composed_new_cast_frame, hud_changed));
+    composed_new_cast_frame = composed_new_cast_frame || hud_changed;
     if (composed_new_cast_frame) {
         // CastStageRenderer defers intermediate D2D flushes. Submit the fully
         // composed background/video/title/lyric frame exactly once before the
@@ -1704,7 +1722,7 @@ void render_cast_frame(CastSession& cast) {
         && !holding_last_complete_cast_frame
         && !host.cast.lifecycle.program_ready_for(video_revision);
     const auto video_submitted = stage_texture && (
-        (holding_last_complete_cast_frame || !composed_new_cast_frame)
+        !composed_new_cast_frame
             ? host.cast.video_encoder.submit_repeated_texture(
                 stage_texture,
                 frame_time_100ns,
@@ -1790,6 +1808,10 @@ CastVideoBufferSnapshot cast_buffer_snapshot(
 }
 
 void reset_cast_nv12_pipeline(CastSession& cast) noexcept {
+    cast.last_overlay_base.reset();
+    cast.last_overlay_program.reset();
+    cast.hud_bgra_layer.reset();
+    cast.hud_renderer.reset();
     cast.last_nv12_frame.reset();
     cast.nv12_background_frame.reset();
     cast.nv12_background_source.reset();

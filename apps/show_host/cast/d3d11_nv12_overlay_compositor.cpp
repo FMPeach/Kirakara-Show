@@ -382,12 +382,16 @@ struct D3D11Nv12OverlayCompositor::Impl {
                 E_INVALIDARG);
             return {};
         }
-        auto rect = overlay.changed
-            ? overlay.dirty_rect : overlay.coverage_rect;
-        if (rect.empty()) rect = overlay.coverage_rect;
-        if (!valid_rect(rect, config.width, config.height)) {
-            fail(D3D11Nv12OverlayFailure::invalid_input, E_INVALIDARG);
-            return {};
+        const auto count = overlay.coverage_count ? overlay.coverage_count : 1U;
+        if (count > overlay.coverage_regions.size()) return {};
+        auto legacy = overlay.changed ? overlay.dirty_rect : overlay.coverage_rect;
+        if (legacy.empty()) legacy = overlay.coverage_rect;
+        for (std::uint32_t i = 0; i < count; ++i) {
+            const auto rect = overlay.coverage_count ? overlay.coverage_regions[i] : legacy;
+            if (!valid_rect(rect, config.width, config.height)) {
+                fail(D3D11Nv12OverlayFailure::invalid_input, E_INVALIDARG);
+                return {};
+            }
         }
 
         auto output = surfaces.try_acquire();
@@ -412,7 +416,10 @@ struct D3D11Nv12OverlayCompositor::Impl {
         if (diagnostics) {
             diagnostics->increment(CastPipelineCounter::gpu_copies);
         }
-        if (!dispatch(base, rect, output)) return {};
+        for (std::uint32_t i = 0; i < count; ++i) {
+            const auto rect = overlay.coverage_count ? overlay.coverage_regions[i] : legacy;
+            if (!dispatch(base, rect, output)) return {};
+        }
         const bool encoder_copy = output.needs_encoder_copy();
         if (encoder_copy) {
             context->CopyResource(encoder_texture, compose_texture);

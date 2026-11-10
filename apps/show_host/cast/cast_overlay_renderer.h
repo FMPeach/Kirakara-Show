@@ -8,7 +8,10 @@
 #include "kirakara/show/win32/song_title_renderer.hpp"
 
 #include <cstdint>
+#include <array>
 #include <memory>
+
+struct HostHudFrame;
 
 class CastPipelineDiagnostics;
 
@@ -34,6 +37,9 @@ struct CastOverlayFrame {
     bool changed{};
     bool title_drawn{};
     bool lyrics_drawn{};
+    // Independent bands avoid dispatching the empty gap between top HUD and lyrics.
+    std::array<CastOverlayRect, 2> coverage_regions{};
+    std::uint32_t coverage_count{};
 };
 
 // Cast-only transparent BGRA overlay target. Timeline state is evaluated once
@@ -62,7 +68,8 @@ public:
         const kirakara::show::RenderStyle& style,
         std::uint64_t content_revision,
         kirakara::show::win32::LyricRenderer& lyric_renderer,
-        kirakara::show::win32::SongTitleRenderer* title_renderer = nullptr);
+        kirakara::show::win32::SongTitleRenderer* title_renderer = nullptr,
+        const HostHudFrame* hud = nullptr);
 
     [[nodiscard]] const CastOverlayFrame& frame() const noexcept;
 

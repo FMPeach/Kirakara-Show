@@ -1,5 +1,6 @@
 #include "../apps/show_host/cast/cast_overlay_renderer.h"
 #include "../apps/show_host/cast/cast_pipeline_diagnostics.h"
+#include "../apps/show_host/overlay/host_hud_renderer.h"
 
 #include "kirakara/show/timeline.hpp"
 
@@ -322,6 +323,27 @@ int main() {
                 CastPipelineEvent::overlay_draw).count == title_draws,
         "unchanged title must not redraw or flush caches every frame");
 
+    {
+        kirakara::show::win32::D3D11TextureSurface card;
+        expect(card.resize_on_device(device, 100, 30), "HUD texture");
+        card.begin_draw(); card.clear({1, 0, 0, .8F});
+        expect(card.end_draw(), "HUD fill"); card.flush_d2d();
+        HostHudFrame hud{card.native_texture(), 200, 4, 100, 30, 1, true};
+        auto low_style = style; low_style.line1_y = 600;
+        expect(overlay.render(document, empty_title, 1.5, engine, low_style, 5,
+            lyric_renderer, &title_renderer, &hud), "lyrics plus top HUD");
+        expect(overlay.frame().coverage_count == 2, "HUD and lyric coverage stay separate");
+        const auto version = overlay.frame().content_version;
+        expect(overlay.render(document, empty_title, 1.5, engine, low_style, 5,
+            lyric_renderer, &title_renderer, &hud) && overlay.frame().content_version == version,
+            "static combined overlay reuses texture");
+        hud.visible = false;
+        expect(overlay.render(document, empty_title, 1.5, engine, low_style, 5,
+            lyric_renderer, &title_renderer, &hud), "HUD removed during held program");
+        pixels = read_bgra(device, context, static_cast<ID3D11Texture2D*>(overlay.frame().texture));
+        expect(pixels[(10 * 320 + 250) * 4 + 3] == 0, "old HUD is erased");
+        expect(overlay.frame().coverage_count == 1, "lyric-only ROI restored");
+    }
     overlay.reset();
     title_renderer.shutdown();
     lyric_renderer.shutdown();
