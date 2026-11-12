@@ -57,11 +57,108 @@ int main() {
         expect(update.state == NativeStageProgramClockState::priming,
             "startup gap allowance changed a nonzero seek");
 
-        clock.discontinuity(0.0, 0.0);
-        input.video_buffer = ready_buffer(0.100, 0.3, 5);
+        // These are the first decoded timestamps observed for the two tracks
+        // that still stalled with the previous 50 ms allowance.
+        for (double first_frame : {0.083417, 0.125}) {
+            clock.discontinuity(0.0, 0.0);
+            input.video_buffer = ready_buffer(first_frame, first_frame + 0.040, 1);
+            update = clock.update(input);
+            expect(update.state == NativeStageProgramClockState::priming
+                    && !update.request_audio_play,
+                "the leading gap was counted as buffered video");
+
+            input.video_buffer = ready_buffer(first_frame, 0.375, 5);
+            input.video_buffer.source_buffering_state =
+                MfD3D11VideoSourceBufferingState::buffering;
+            update = clock.update(input);
+            expect(update.state == NativeStageProgramClockState::priming
+                    && !update.request_audio_play,
+                "a delayed first frame bypassed source buffering");
+
+            input.video_buffer.source_buffering_state =
+                MfD3D11VideoSourceBufferingState::not_buffering;
+            update = clock.update(input);
+            expect(update.state == NativeStageProgramClockState::playing
+                    && update.request_audio_seek && update.request_audio_play,
+                "a buffered first frame above 50 ms blocked startup");
+            expect_near(update.audio_seek_position_seconds, 0.0,
+                "a delayed first frame moved the audio origin");
+        }
+    }
+
+    {
+        NativeStageProgramClock clock;
+        NativeStageProgramClockInput input;
+        input.playback_requested = true;
+        input.has_video = true;
+        input.has_audio_clock = true;
+        input.end_on_audio_eof = true;
+        input.video_buffer = ready_buffer(0.033, 0.165, 4);
+        input.video_buffer.source_buffering_state =
+            MfD3D11VideoSourceBufferingState::waiting_for_bytes;
+        auto update = clock.update(input);
+        expect(update.state == NativeStageProgramClockState::playing
+                && update.request_audio_play,
+            "future HTTP reads blocked startup with a delayed first frame");
+
+        input.monotonic_seconds = input.audio_position_seconds = 0.016;
         update = clock.update(input);
-        expect(update.state == NativeStageProgramClockState::priming,
-            "startup accepted a gap beyond the first-frame allowance");
+        expect(update.state == NativeStageProgramClockState::playing
+                && !update.request_audio_pause,
+            "byte wait before the accepted first frame stopped playback");
+        expect_near(update.position_seconds, 0.016,
+            "startup coverage did not preserve the advancing audio clock");
+
+        input.monotonic_seconds = input.audio_position_seconds = 0.032;
+        input.video_buffer = ready_buffer(0.033, 0.198, 5);
+        update = clock.update(input);
+        expect(update.state == NativeStageProgramClockState::playing
+                && !update.request_audio_seek,
+            "arrival of the fifth frame restarted the audio clock");
+        expect_near(update.position_seconds, 0.032,
+            "playback did not advance when the HTTP byte wait cleared");
+
+        input.monotonic_seconds = input.audio_position_seconds = 0.050;
+        update = clock.update(input);
+        expect_near(update.position_seconds, 0.050,
+            "playback stalled while crossing the accepted first timestamp");
+
+        input.monotonic_seconds = input.audio_position_seconds = 0.210;
+        input.video_buffer.source_buffering_state =
+            MfD3D11VideoSourceBufferingState::waiting_for_bytes;
+        update = clock.update(input);
+        expect(update.state == NativeStageProgramClockState::buffering
+                && update.request_audio_pause,
+            "startup coverage masked a later genuine HTTP underflow");
+
+        clock.reset(0.0, 0.0);
+        input.monotonic_seconds = input.audio_position_seconds = 0.0;
+        input.video_buffer = ready_buffer(0.033, 0.165, 4);
+        update = clock.update(input);
+        expect(update.state == NativeStageProgramClockState::playing,
+            "startup did not accept the first frame before testing recovery");
+
+        input.monotonic_seconds = input.audio_position_seconds = 0.016;
+        input.video_buffer = {};
+        input.video_buffer.source_buffering_state =
+            MfD3D11VideoSourceBufferingState::waiting_for_bytes;
+        update = clock.update(input);
+        expect(update.state == NativeStageProgramClockState::buffering
+                && update.request_audio_pause,
+            "losing the accepted first frame did not stop playback");
+
+        input.video_buffer = ready_buffer(0.066, 0.231, 5);
+        update = clock.update(input);
+        expect(update.state == NativeStageProgramClockState::buffering,
+            "recovery accepted an unrelated later first timestamp");
+
+        input.video_buffer = ready_buffer(0.033, 0.198, 5);
+        update = clock.update(input);
+        expect(update.state == NativeStageProgramClockState::playing
+                && update.request_audio_seek && update.request_audio_play,
+            "restoring startup coverage did not release buffering");
+        expect_near(update.audio_seek_position_seconds, 0.0,
+            "startup recovery skipped the beginning of the audio");
     }
 
     // HTTP byte waits may target future read-ahead. They only stop playback

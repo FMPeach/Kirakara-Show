@@ -92,6 +92,8 @@ private:
     // briefly restart audio against a queue that still lacks runway.
     bool paused_requires_video_runway_{};
     double position_seconds_{};
+    // The first decoded frame covers the leading gap accepted at zero start.
+    double startup_first_frame_seconds_{};
     double anchor_position_seconds_{};
     double anchor_monotonic_seconds_{};
 };

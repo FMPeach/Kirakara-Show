@@ -5,8 +5,6 @@
 
 namespace {
 
-constexpr double kMaximumInitialFrameGapSeconds = 0.050;
-
 double finite_non_negative(double value) noexcept {
     return std::isfinite(value) && value > 0.0 ? value : 0.0;
 }
@@ -58,10 +56,9 @@ double effective_video_end(
 
 bool video_ready_to_resume(
         const NativeStageProgramClockInput& input,
-        double position_seconds,
+        double coverage_position,
         const NativeStageProgramClockConfig& config,
-        bool require_runway,
-        bool starting_at_zero = false) noexcept {
+        bool require_runway) noexcept {
     if (!input.has_video || holds_video_tail_for_audio(input)) return true;
     if (input.video_buffer.availability
             == MfD3D11VideoAvailability::fatal_error) {
@@ -70,14 +67,6 @@ bool video_ready_to_resume(
     if (input.video_buffer.source_buffering_state
             == MfD3D11VideoSourceBufferingState::buffering) {
         return false;
-    }
-    auto coverage_position = position_seconds;
-    // The Stage can present the first decoded frame before its timestamp.
-    // Allow a short leading gap at zero while keeping the audio origin intact.
-    const auto first_frame = input.video_buffer.start_seconds;
-    if (starting_at_zero && first_frame > config.timestamp_tolerance_seconds
-            && first_frame <= kMaximumInitialFrameGapSeconds) {
-        coverage_position = first_frame;
     }
     if (!buffer_contains(input.video_buffer, coverage_position,
             config.timestamp_tolerance_seconds)) {
@@ -136,6 +125,7 @@ void NativeStageProgramClock::reset(
     position_seconds_ = finite_non_negative(position_seconds);
     state_ = NativeStageProgramClockState::idle;
     paused_requires_video_runway_ = false;
+    startup_first_frame_seconds_ = 0.0;
     anchor(position_seconds_, monotonic_seconds);
 }
 
@@ -145,6 +135,7 @@ void NativeStageProgramClock::discontinuity(
     position_seconds_ = finite_non_negative(position_seconds);
     state_ = NativeStageProgramClockState::idle;
     paused_requires_video_runway_ = false;
+    startup_first_frame_seconds_ = 0.0;
     anchor(position_seconds_, monotonic_seconds);
 }
 
@@ -230,7 +221,8 @@ NativeStageProgramClockUpdate NativeStageProgramClock::update(
 
     if (state_ == NativeStageProgramClockState::paused) {
         if (video_ready_to_resume(
-                input, position_seconds_, config_,
+                input, std::max(position_seconds_, startup_first_frame_seconds_),
+                config_,
                 paused_requires_video_runway_)) {
             state_ = NativeStageProgramClockState::playing;
             paused_requires_video_runway_ = false;
@@ -268,15 +260,22 @@ NativeStageProgramClockUpdate NativeStageProgramClock::update(
             || state_ == NativeStageProgramClockState::buffering) {
         const bool starting_at_zero =
             state_ == NativeStageProgramClockState::priming
-            && position_seconds_ == 0.0;
+            && position_seconds_ == 0.0
+            && startup_first_frame_seconds_ == 0.0;
+        // Stage can show the first frame before its timestamp. Measure the
+        // runway from that frame without shifting the program clock.
+        const auto coverage_position = starting_at_zero
+            ? finite_non_negative(input.video_buffer.start_seconds)
+            : std::max(position_seconds_, startup_first_frame_seconds_);
         if (!video_ready_to_resume(
-                input, position_seconds_, config_, true, starting_at_zero)) {
+                input, coverage_position, config_, true)) {
             auto update = result();
             update.request_audio_pause = has_audio_stream
                 && previous_state != NativeStageProgramClockState::priming
                 && previous_state != NativeStageProgramClockState::buffering;
             return update;
         }
+        if (starting_at_zero) startup_first_frame_seconds_ = coverage_position;
         state_ = NativeStageProgramClockState::playing;
         anchor(position_seconds_, now);
         auto update = result();
@@ -309,7 +308,9 @@ NativeStageProgramClockUpdate NativeStageProgramClock::update(
         }
     }
 
-    if (video_is_truly_unavailable(input, candidate, config_)) {
+    const auto coverage_position =
+        std::max(candidate, startup_first_frame_seconds_);
+    if (video_is_truly_unavailable(input, coverage_position, config_)) {
         state_ = NativeStageProgramClockState::buffering;
         anchor(position_seconds_, now);
         auto update = result();
@@ -318,6 +319,9 @@ NativeStageProgramClockUpdate NativeStageProgramClock::update(
     }
 
     position_seconds_ = candidate;
+    if (position_seconds_ >= startup_first_frame_seconds_) {
+        startup_first_frame_seconds_ = 0.0;
+    }
     return result();
 }
 
