@@ -28,17 +28,13 @@
 #include <objbase.h>
 #include <propvarutil.h>
 
-// MF_XVP_DISABLE_FRC is declared by the Windows SDK's mfidl.h, but the MinGW
-// headers shipped with this toolchain only carry MF_XVP_SAMPLE_LOCK_TIMEOUT.
-// Value taken from Wine's mfidl.idl. TRUE disables frame-rate conversion in
-// the video processor MFT (deinterlacing still runs).
-#ifndef MF_XVP_DISABLE_FRC
-static const GUID MF_XVP_DISABLE_FRC = {
+namespace {
+
+// Use the published MF_XVP_DISABLE_FRC key with SDKs that omit its declaration.
+// TRUE disables frame-rate conversion in the video processor MFT.
+constexpr GUID kMfXvpDisableFrc{
     0x2c0afa19, 0x7a97, 0x4d5a,
     {0x9e, 0xe8, 0x16, 0xd4, 0xfc, 0x51, 0x8d, 0x8c}};
-#endif
-
-namespace {
 
 constexpr double kTimestampToleranceSeconds = 1.0 / 240.0;
 constexpr double kDefaultFrameDurationSeconds = 1.0 / 30.0;
@@ -938,7 +934,7 @@ private:
             if (SUCCEEDED(transform->GetAttributes(&attributes))
                     && attributes) {
                 static_cast<void>(
-                    attributes->SetUINT32(MF_XVP_DISABLE_FRC, TRUE));
+                    attributes->SetUINT32(kMfXvpDisableFrc, TRUE));
             }
             release(attributes);
             release(transform);

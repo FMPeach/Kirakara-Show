@@ -5,6 +5,8 @@
 
 namespace {
 
+constexpr double kMaximumInitialFrameGapSeconds = 0.050;
+
 double finite_non_negative(double value) noexcept {
     return std::isfinite(value) && value > 0.0 ? value : 0.0;
 }
@@ -58,7 +60,8 @@ bool video_ready_to_resume(
         const NativeStageProgramClockInput& input,
         double position_seconds,
         const NativeStageProgramClockConfig& config,
-        bool require_runway) noexcept {
+        bool require_runway,
+        bool starting_at_zero = false) noexcept {
     if (!input.has_video || holds_video_tail_for_audio(input)) return true;
     if (input.video_buffer.availability
             == MfD3D11VideoAvailability::fatal_error) {
@@ -68,7 +71,15 @@ bool video_ready_to_resume(
             == MfD3D11VideoSourceBufferingState::buffering) {
         return false;
     }
-    if (!buffer_contains(input.video_buffer, position_seconds,
+    auto coverage_position = position_seconds;
+    // The Stage can present the first decoded frame before its timestamp.
+    // Allow a short leading gap at zero while keeping the audio origin intact.
+    const auto first_frame = input.video_buffer.start_seconds;
+    if (starting_at_zero && first_frame > config.timestamp_tolerance_seconds
+            && first_frame <= kMaximumInitialFrameGapSeconds) {
+        coverage_position = first_frame;
+    }
+    if (!buffer_contains(input.video_buffer, coverage_position,
             config.timestamp_tolerance_seconds)) {
         return false;
     }
@@ -80,7 +91,7 @@ bool video_ready_to_resume(
         return true;
     }
     const auto runway = buffer_runway(
-        input.video_buffer, position_seconds);
+        input.video_buffer, coverage_position);
     return runway >= finite_non_negative(config.recovery_runway_seconds)
         || (runway > finite_non_negative(
                 config.timestamp_tolerance_seconds)
@@ -255,8 +266,11 @@ NativeStageProgramClockUpdate NativeStageProgramClock::update(
 
     if (state_ == NativeStageProgramClockState::priming
             || state_ == NativeStageProgramClockState::buffering) {
+        const bool starting_at_zero =
+            state_ == NativeStageProgramClockState::priming
+            && position_seconds_ == 0.0;
         if (!video_ready_to_resume(
-                input, position_seconds_, config_, true)) {
+                input, position_seconds_, config_, true, starting_at_zero)) {
             auto update = result();
             update.request_audio_pause = has_audio_stream
                 && previous_state != NativeStageProgramClockState::priming

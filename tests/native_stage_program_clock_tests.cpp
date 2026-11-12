@@ -32,6 +32,38 @@ NativeStageVideoBufferSnapshot ready_buffer(
 }  // namespace
 
 int main() {
+    {
+        NativeStageProgramClock clock;
+        NativeStageProgramClockInput input;
+        input.playback_requested = true;
+        input.has_video = true;
+        input.has_audio_clock = true;
+        input.video_buffer = ready_buffer(1.0 / 30.0, 2.0 / 30.0, 1);
+        auto update = clock.update(input);
+        expect(update.state == NativeStageProgramClockState::priming
+                && !update.request_audio_play,
+            "a delayed first frame bypassed startup runway");
+
+        input.video_buffer = ready_buffer(1.0 / 30.0, 0.2, 5);
+        update = clock.update(input);
+        expect(update.state == NativeStageProgramClockState::playing
+                && update.request_audio_seek && update.request_audio_play,
+            "a one-frame leading gap blocked startup at zero");
+        expect_near(update.audio_seek_position_seconds, 0.0,
+            "startup skipped the beginning of the audio");
+
+        clock.discontinuity(0.010, 0.0);
+        update = clock.update(input);
+        expect(update.state == NativeStageProgramClockState::priming,
+            "startup gap allowance changed a nonzero seek");
+
+        clock.discontinuity(0.0, 0.0);
+        input.video_buffer = ready_buffer(0.100, 0.3, 5);
+        update = clock.update(input);
+        expect(update.state == NativeStageProgramClockState::priming,
+            "startup accepted a gap beyond the first-frame allowance");
+    }
+
     // HTTP byte waits may target future read-ahead. They only stop playback
     // once current coverage runs out, never an already-ready start/recovery.
     {
