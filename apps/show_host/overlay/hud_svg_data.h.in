@@ -2,3 +2,11 @@
 inline constexpr char kHudWifiSvg[] = R"kirakara_svg(@KIRAKARA_HUD_WIFI_SVG@)kirakara_svg";
 inline constexpr char kHudPhoneSvg[] = R"kirakara_svg(@KIRAKARA_HUD_PHONE_SVG@)kirakara_svg";
 inline constexpr char kHudEthernetSvg[] = R"kirakara_svg(@KIRAKARA_HUD_ETHERNET_SVG@)kirakara_svg";
+inline constexpr char kHudPlaySvg[] = R"kirakara_svg(@KIRAKARA_HUD_PLAY_SVG@)kirakara_svg";
+inline constexpr char kHudPauseSvg[] = R"kirakara_svg(@KIRAKARA_HUD_PAUSE_SVG@)kirakara_svg";
+inline constexpr char kHudReplaySvg[] = R"kirakara_svg(@KIRAKARA_HUD_ROTATE_CCW_SVG@)kirakara_svg";
+inline constexpr char kHudSkipSvg[] = R"kirakara_svg(@KIRAKARA_HUD_SKIP_FORWARD_SVG@)kirakara_svg";
+inline constexpr char kHudVocalSvg[] = R"kirakara_svg(@KIRAKARA_HUD_AUDIO_LINES_SVG@)kirakara_svg";
+inline constexpr char kHudAccompanimentSvg[] = R"kirakara_svg(@KIRAKARA_HUD_MIC_SVG@)kirakara_svg";
+inline constexpr char kHudVolumeUpSvg[] = R"kirakara_svg(@KIRAKARA_HUD_VOLUME_2_SVG@)kirakara_svg";
+inline constexpr char kHudVolumeDownSvg[] = R"kirakara_svg(@KIRAKARA_HUD_VOLUME_1_SVG@)kirakara_svg";

@@ -227,6 +227,7 @@ if(WIN32)
 
     add_library(kirakara_show_host_hud STATIC
         apps/show_host/overlay/physical_hud_output.cpp
+        apps/show_host/overlay/host_hud_action_renderer.cpp
         apps/show_host/overlay/host_hud_renderer.cpp
         apps/show_host/overlay/host_hud_controller.cpp
         apps/show_host/overlay/host_hud_blitter.cpp
@@ -242,6 +243,21 @@ if(WIN32)
     file(READ "${CMAKE_CURRENT_SOURCE_DIR}/third_party/lucide/ethernet-port.svg" KIRAKARA_HUD_ETHERNET_SVG)
     foreach(_svg KIRAKARA_HUD_WIFI_SVG KIRAKARA_HUD_PHONE_SVG KIRAKARA_HUD_ETHERNET_SVG)
         string(REPLACE "currentColor" "#f8fafc" ${_svg} "${${_svg}}")
+    endforeach()
+    foreach(_icon play pause rotate-ccw skip-forward audio-lines mic volume-1 volume-2)
+        set(_file "${CMAKE_CURRENT_SOURCE_DIR}/third_party/lucide/${_icon}.svg")
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_file}")
+        file(READ "${_file}" _svg)
+        string(TOUPPER "${_icon}" _name)
+        string(REPLACE "-" "_" _name "${_name}")
+        if(_icon STREQUAL "pause" OR _icon STREQUAL "skip-forward")
+            set(_color "#f59e0b")
+        else()
+            set(_color "#06b6d4")
+        endif()
+        string(REPLACE "currentColor" "${_color}" _svg "${_svg}")
+        string(REPLACE "stroke-width=\"2\"" "stroke-width=\"2.4\"" _svg "${_svg}")
+        set(KIRAKARA_HUD_${_name}_SVG "${_svg}")
     endforeach()
     configure_file(apps/show_host/overlay/hud_svg_data.h.in generated/hud_svg_data.h @ONLY)
     target_include_directories(kirakara_show_host_hud PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")

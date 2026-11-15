@@ -235,7 +235,7 @@ LRESULT CALLBACK stage_proc(
         return TRUE;
     case WM_TIMER:
         if (host && wparam == kHostHudAnimationTimer) {
-            render_physical_hud(*host);
+            service_host_hud_timer(*host);
             return 0;
         }
         break;

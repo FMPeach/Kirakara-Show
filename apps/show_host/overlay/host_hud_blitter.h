@@ -14,13 +14,13 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-// Cast C retains just the pixels under the card so a paused/held frame can
-// remove or replace it without another full-canvas copy or video conversion.
+// Cast C retains just the pixels under the two tiles so a paused/held frame
+// can move or remove either without rebuilding the program frame.
 class HostHudRetainedBgraLayer {
 public:
     HostHudRetainedBgraLayer();
     ~HostHudRetainedBgraLayer();
-    bool apply(void* context, const HostHudFrame& card, bool clean_frame_changed, bool& changed);
+    bool apply(void* context, const HostHudLayers& layers, bool clean_frame_changed, bool& changed);
     void reset();
     std::uint64_t captures() const noexcept;
 private:

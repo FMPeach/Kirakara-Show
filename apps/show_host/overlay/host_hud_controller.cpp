@@ -2,6 +2,19 @@
 #include <algorithm>
 #include <cmath>
 
+HostHudActionAppearance evaluate_host_hud_action(
+        const HostHudActionEvent* event, double now) noexcept {
+    if (!event || event->action == HostHudAction::none) return {};
+    if (event->action == HostHudAction::pause) return {event->action, 1};
+    const auto hold_until = event->started + 3.0;
+    if (now < hold_until) return {event->action, 1, false, hold_until};
+    if (event->pause_active) return {HostHudAction::pause, 1};
+    const auto end_at = hold_until + .200;
+    if (now >= end_at) return {};
+    return {event->action,
+        static_cast<float>(std::clamp((end_at - now) / .200, 0.0, 1.0)), true};
+}
+
 HostHudPresentation HostHudController::presentation() const noexcept {
     const auto progress = tail_triggered_
         ? static_cast<float>(std::clamp(tail_remaining_ / 10, 0.0, 1.0)) : 0.0F;

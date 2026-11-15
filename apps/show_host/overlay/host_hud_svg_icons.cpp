@@ -12,11 +12,16 @@
 #include <cstring>
 
 using Microsoft::WRL::ComPtr;
+namespace {
+constexpr std::array sources{kHudWifiSvg, kHudPhoneSvg, kHudEthernetSvg,
+    kHudPlaySvg, kHudPauseSvg, kHudReplaySvg, kHudSkipSvg,
+    kHudVocalSvg, kHudAccompanimentSvg, kHudVolumeUpSvg, kHudVolumeDownSvg};
+}
 struct HostHudSvgIcons::Impl {
     void* owner{};
     ComPtr<ID2D1DeviceContext5> context;
-    std::array<ComPtr<ID2D1SvgDocument>, 3> icons;
-    std::array<bool, 3> attempted{};
+    std::array<ComPtr<ID2D1SvgDocument>, sources.size()> icons;
+    std::array<bool, sources.size()> attempted{};
 };
 HostHudSvgIcons::HostHudSvgIcons() : impl_(std::make_unique<Impl>()) {}
 HostHudSvgIcons::~HostHudSvgIcons() = default;
@@ -32,9 +37,9 @@ bool HostHudSvgIcons::draw(void* target, HostHudIcon icon, float x, float y, flo
     auto& p = *impl_;
     if (!p.context) return false;
     const auto index = static_cast<std::size_t>(icon);
+    if (index >= sources.size()) return false;
     if (!p.attempted[index]) {
         p.attempted[index] = true;
-        constexpr std::array sources{kHudWifiSvg, kHudPhoneSvg, kHudEthernetSvg};
         const auto* svg = sources[index];
         ComPtr<IStream> stream;
         ULONG written{};

@@ -24,6 +24,17 @@ enum {
     SHOW_HOST_HUD_ANNOUNCEMENT_ENABLED = 4,
     SHOW_HOST_HUD_NETWORK_WIFI = 8,
 };
+enum {
+    SHOW_HOST_HUD_ACTION_NONE = 0,
+    SHOW_HOST_HUD_ACTION_PLAY = 1,
+    SHOW_HOST_HUD_ACTION_PAUSE = 2,
+    SHOW_HOST_HUD_ACTION_REPLAY = 3,
+    SHOW_HOST_HUD_ACTION_SKIP = 4,
+    SHOW_HOST_HUD_ACTION_VOCAL = 5,
+    SHOW_HOST_HUD_ACTION_ACCOMPANIMENT = 6,
+    SHOW_HOST_HUD_ACTION_VOLUME_UP = 7,
+    SHOW_HOST_HUD_ACTION_VOLUME_DOWN = 8,
+};
 typedef struct ShowHostHudQueueItem {
     const wchar_t* title;
     const wchar_t* artist;
@@ -63,6 +74,11 @@ typedef void (*ShowHostLanStateCallback)(void* context, uint64_t revision, bool 
 // Borrowed input buffers/strings are copied before these setters return.
 // A null QR image clears it. The old Overlay ABI remains independent.
 SHOW_HOST_API bool show_host_set_audience_hud_state(ShowHostHandle, const ShowHostAudienceHudState*);
+/// Display an explicit audience HUD action without controlling playback.
+/// sequence must increase per Host; older/duplicate notifications are ignored.
+/// NONE clears the indicator. Audio adjustments temporarily replace PAUSE.
+SHOW_HOST_API bool show_host_notify_playback_action(
+    ShowHostHandle, uint32_t action, uint64_t sequence);
 SHOW_HOST_API bool show_host_set_phone_order_qr_image(ShowHostHandle, const ShowHostPhoneOrderQrImage*);
 SHOW_HOST_API bool show_host_get_lan_state(ShowHostHandle, ShowHostLanState*);
 SHOW_HOST_API void show_host_set_lan_state_callback(ShowHostHandle, ShowHostLanStateCallback, void*);

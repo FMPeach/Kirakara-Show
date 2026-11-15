@@ -2,6 +2,7 @@
 #include "hud_test_image.h"
 #include "../apps/show_host/overlay/host_hud_blitter.h"
 #include "../apps/show_host/overlay/host_hud_svg_icons.h"
+#include <algorithm>
 #include <cstdlib>
 #include <cmath>
 #include <iostream>
@@ -61,7 +62,10 @@ int main(int argc, char** argv) {
         {
             HostHudSvgIcons icons;
             device.begin_draw();
-            for (const auto icon : {HostHudIcon::wifi, HostHudIcon::phone, HostHudIcon::ethernet})
+            for (const auto icon : {HostHudIcon::wifi, HostHudIcon::phone, HostHudIcon::ethernet,
+                    HostHudIcon::play, HostHudIcon::pause, HostHudIcon::replay, HostHudIcon::skip,
+                    HostHudIcon::vocal, HostHudIcon::accompaniment,
+                    HostHudIcon::volume_up, HostHudIcon::volume_down})
                 expect(icons.draw(device.native_render_target(), icon, 0, 0, 12), "Lucide SVG supported");
             expect(device.end_draw(), "SVG draw batch");
         }
@@ -119,23 +123,146 @@ int main(int argc, char** argv) {
             auto card = renderer.render(device.native_d3d_device(), 640, 360, &state, image, true);
             HostHudRetainedBgraLayer layer;
             bool changed{};
-            expect(layer.apply(target.native_render_target(), card, true, changed) && changed,
+            expect(layer.apply(target.native_render_target(), {card, {}}, true, changed) && changed,
                 "Cast C draws cached card over clean base");
             expect(target.read_rgba8() != original, "card pixels visible in C");
-            for (int i = 0; i < 100; ++i) expect(layer.apply(target.native_render_target(), card, false, changed)
+            for (int i = 0; i < 100; ++i) expect(layer.apply(target.native_render_target(), {card, {}}, false, changed)
                 && !changed, "retained C frame skips all drawing");
             expect(layer.captures() == 1, "only one bounded underlay capture");
             const auto full_opacity = target.read_rgba8();
             card.opacity = .5F;
-            expect(layer.apply(target.native_render_target(), card, false, changed) && changed
+            expect(layer.apply(target.native_render_target(), {card, {}}, false, changed) && changed
                 && target.read_rgba8() != full_opacity && layer.captures() == 1,
                 "Cast C fades against its original bounded underlay without recapture");
-            expect(layer.apply(target.native_render_target(), card, false, changed) && !changed,
+            expect(layer.apply(target.native_render_target(), {card, {}}, false, changed) && !changed,
                 "constant partial opacity remains static");
-            card.visible = false;
-            expect(layer.apply(target.native_render_target(), card, false, changed) && changed,
+            expect(layer.apply(target.native_render_target(), {}, false, changed) && changed,
                 "offline removes card from held frame");
             expect(target.read_rgba8() == original, "C restores exact underlying program pixels");
+        }
+        {
+            using kirakara::show::win32::D3D11TextureSurface;
+            auto* gpu = device.native_d3d_device();
+            D3D11TextureSurface target;
+            expect(target.resize_on_device(gpu, 640, 360), "combined C target");
+            target.begin_draw(); target.clear({.15F, .25F, .35F, 1});
+            expect(target.end_draw(), "clean two-tile frame");
+            const auto original = target.read_rgba8();
+            HostHudRenderer anchor;
+            HostHudActionRenderer actions;
+            HostHudRetainedBgraLayer layer;
+            HostHudState content;
+            content.options = {true, true, false};
+            content.current = {L"当前播放", L"演唱者"};
+            content.queue.resize(4, {L"下一首", L"演唱者"});
+            HostHudPresentation phase{false, 0, 1, 1, true};
+            const HostHudActionAppearance pause{HostHudAction::pause, 1};
+            const auto get_layers = [&](bool lan) {
+                HostHudLayers result;
+                result.card = anchor.render(gpu, 640, 360, &content, image, lan, phase);
+                result.action = actions.render(gpu, 640, 360, result.card, pause);
+                return result;
+            };
+            bool changed{};
+            auto layers = get_layers(true);
+            const auto qr_action_y = layers.action.y;
+            const auto action_texture = layers.action.texture;
+            expect(layers.card.layout_ready && layers.action.visible
+                    && layers.action.x + layers.action.width == layers.card.x + layers.card.width,
+                "action right-aligns to the live QR");
+            expect(layer.apply(target.native_render_target(), layers, true, changed)
+                && changed && layer.captures() == 2, "C captures both clean tile regions");
+            const auto qr_and_pause = target.read_rgba8();
+
+            phase.queue_visible = true; phase.monotonic_seconds = 2;
+            layers = get_layers(true);
+            phase.monotonic_seconds = 2.075; layers = get_layers(true);
+            expect(layers.card.opacity < .6F && layers.action.y == qr_action_y,
+                "action stays under the outgoing QR until the scene changes");
+            phase.monotonic_seconds = 2.15; layers = get_layers(true);
+            expect(layers.card.layout_ready && !layers.card.visible
+                && layers.card.height == 152 && layers.action.y != qr_action_y,
+                "zero-alpha incoming list is still the placement anchor");
+            phase.monotonic_seconds = 2.31; layers = get_layers(true);
+            expect(layers.card.visible && layers.action.texture == action_texture
+                && actions.rasterizations() == 1, "scene change reuses immutable action pixels");
+            expect(layer.apply(target.native_render_target(), layers, false, changed) && changed,
+                "C switches to the list without capturing old action pixels");
+            const auto list_action_y = layers.action.y;
+            content.queue.pop_back();
+            phase.monotonic_seconds = 3; layers = get_layers(true);
+            expect(layers.card.animating && layers.action.y < list_action_y,
+                "shorter list moves the action once at the start of the row blend");
+            expect(layer.apply(target.native_render_target(), layers, false, changed) && changed,
+                "C handles shorter list crossing the old action bounds");
+            content.queue.push_back({L"另一首", L"演唱者"});
+            phase.monotonic_seconds = 3.2; layers = get_layers(true);
+            expect(layers.action.y == list_action_y && layers.action.opacity == 1,
+                "growing the list does not reset the action opacity");
+            expect(layer.apply(target.native_render_target(), layers, false, changed) && changed,
+                "C handles the old action region becoming list pixels");
+            phase.queue_visible = false;
+            phase.monotonic_seconds = 4; static_cast<void>(get_layers(true));
+            phase.monotonic_seconds = 4.31; layers = get_layers(true);
+            expect(layers.action.y == qr_action_y && layer.apply(
+                    target.native_render_target(), layers, false, changed)
+                && target.read_rgba8() == qr_and_pause, "C returns to exact QR plus action pixels");
+            layers = get_layers(false);
+            expect(!layers.card.visible && layers.action.visible
+                && layers.action.y == 13, "offline action falls back to the upper corner");
+            expect(layer.apply(target.native_render_target(), layers, false, changed) && changed,
+                "offline removes only the QR");
+            const auto underlay_count = layer.captures();
+            layers.action.opacity = .5F;
+            expect(layer.apply(target.native_render_target(), layers, false, changed) && changed
+                && layer.captures() == underlay_count, "fade reuses action underlay while video is retained");
+            expect(layer.apply(target.native_render_target(), {}, false, changed) && changed
+                && target.read_rgba8() == original, "both old C regions restore pixel-exactly");
+            expect(actions.rasterizations() == 1, "moves, rows and disconnect never rerasterize pause");
+
+            for (const auto size : {std::pair{1280U, 720U}, {1920U, 1080U}, {3840U, 2160U}}) {
+                const auto square = actions.render(gpu, size.first, size.second, {}, pause);
+                expect(square.visible && square.width == square.height
+                    && square.width == static_cast<std::uint32_t>(
+                        std::ceil(128 * host_hud_scale(size.first, size.second))),
+                    "action tiles scale with the existing HUD");
+            }
+            const auto play = actions.render(gpu, 1920, 1080, {}, {HostHudAction::play, 1});
+            const auto pause_card = actions.render(gpu, 1920, 1080, {}, pause);
+            const auto replay = actions.render(gpu, 1920, 1080, {}, {HostHudAction::replay, 1});
+            const auto skip = actions.render(gpu, 1920, 1080, {}, {HostHudAction::skip, 1});
+            expect(play.visible && pause_card.visible && replay.visible && skip.visible
+                && play.texture != pause_card.texture && replay.texture != skip.texture,
+                "all four actions have cached, distinct tiles");
+            if (argc > 1) {
+                const std::filesystem::path path(argv[1]);
+                save_card(path / "action-play.png", play, gpu);
+                save_card(path / "action-pause.png", pause_card, gpu);
+                save_card(path / "action-replay.png", replay, gpu);
+                save_card(path / "action-skip.png", skip, gpu);
+            }
+            const auto draws = actions.rasterizations();
+            const std::pair<HostHudAction, const char*> audio_tiles[]{
+                {HostHudAction::vocal, "action-vocal.png"},
+                {HostHudAction::accompaniment, "action-accompaniment.png"},
+                {HostHudAction::volume_up, "action-volume-up.png"},
+                {HostHudAction::volume_down, "action-volume-down.png"},
+            };
+            std::vector<void*> audio_textures;
+            for (const auto& [kind, file] : audio_tiles) {
+                const auto tile = actions.render(gpu, 1920, 1080, {}, {kind, 1});
+                expect(tile.visible && tile.texture != pause_card.texture
+                    && std::find(audio_textures.begin(), audio_textures.end(), tile.texture)
+                        == audio_textures.end(), "each audio action owns its own tiny texture");
+                audio_textures.push_back(tile.texture);
+                expect(actions.render(gpu, 1920, 1080, {}, {kind, .5F}).texture == tile.texture,
+                    "audio action fades without rasterizing");
+                if (argc > 1) save_card(std::filesystem::path(argv[1]) / file, tile, gpu);
+            }
+            expect(actions.rasterizations() == draws + std::size(audio_tiles),
+                "each audio action rasterizes once");
+            expect(actions.render(gpu, 1920, 1080, {}, pause).texture == pause_card.texture,
+                "return to pause reuses original texture");
         }
         for (const auto& size : {std::pair{3840U, 2160U}, {1280U, 720U}, {960U, 540U}, {1024U, 576U}, {640U, 360U}}) {
             const auto& scaled = renderer.render(device.native_d3d_device(), size.first, size.second, &state, image, true);
@@ -458,6 +585,36 @@ int main(int argc, char** argv) {
         SendMessageW(host->window, kHostLanChangedMessage, 0, 0);
         expect(notifications.load() == count, "callback unregister completes before return");
         expect(show_host_set_phone_order_qr_image(handle, nullptr) && !host->hud.qr.load(), "clear image");
+        expect(!show_host_notify_playback_action(handle, 99, 1)
+            && !show_host_notify_playback_action(handle, SHOW_HOST_HUD_ACTION_PLAY, 0),
+            "action API rejects invalid action and zero sequence");
+        expect(show_host_notify_playback_action(handle, SHOW_HOST_HUD_ACTION_PAUSE, 1),
+            "action API accepts pause without changing playback");
+        const auto pause_event = host->hud.action.load();
+        expect(pause_event && pause_event->action == HostHudAction::pause
+            && show_host_notify_playback_action(handle, SHOW_HOST_HUD_ACTION_PLAY, 1)
+            && host->hud.action.load() == pause_event, "duplicate sequence cannot replace or refresh pause");
+        expect(show_host_notify_playback_action(handle, SHOW_HOST_HUD_ACTION_SKIP, 3)
+            && show_host_notify_playback_action(handle, SHOW_HOST_HUD_ACTION_REPLAY, 2)
+            && host->hud.action.load()->action == HostHudAction::skip,
+            "a late action never replaces the latest one");
+        expect(show_host_notify_playback_action(handle, SHOW_HOST_HUD_ACTION_PAUSE, 4)
+            && show_host_notify_playback_action(handle, SHOW_HOST_HUD_ACTION_ACCOMPANIMENT, 5)
+            && show_host_notify_playback_action(handle, SHOW_HOST_HUD_ACTION_VOLUME_UP, 6),
+            "rapid audio changes are accepted while paused");
+        const auto adjusted = host->hud.action.load();
+        expect(adjusted->action == HostHudAction::volume_up && adjusted->pause_active
+            && evaluate_host_hud_action(adjusted.get(), adjusted->started + 3).action
+                == HostHudAction::pause, "only the last adjustment stays before restoring pause");
+        expect(show_host_notify_playback_action(handle, SHOW_HOST_HUD_ACTION_PLAY, 7)
+            && show_host_notify_playback_action(handle, SHOW_HOST_HUD_ACTION_VOLUME_DOWN, 8)
+            && !host->hud.action.load()->pause_active, "play cancels paused fallback immediately");
+        expect(show_host_notify_playback_action(handle, SHOW_HOST_HUD_ACTION_PAUSE, 9)
+            && show_host_notify_playback_action(handle, SHOW_HOST_HUD_ACTION_VOCAL, 10)
+            && show_host_notify_playback_action(handle, SHOW_HOST_HUD_ACTION_NONE, 11)
+            && host->hud.action.load()->action == HostHudAction::none
+            && !host->hud.action.load()->pause_active,
+            "disabling indicators clears the visible action and its paused fallback");
         expect(!host->hud.physical_output.initialized(), "controller-only mode creates no HUD visual");
         expect(!host->hud.animation_timer_active, "controller-only mode never starts an animation timer");
         show_host_set_lan_state_callback(handle, nullptr, nullptr);

@@ -23,6 +23,7 @@ show_host_is_buffering
 show_host_load
 show_host_load_with_clock
 show_host_load_with_options
+show_host_notify_playback_action
 show_host_pause
 show_host_play
 show_host_prepare_next

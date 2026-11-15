@@ -10,15 +10,18 @@ struct ShowHost;
 struct HostHudRuntime {
     std::atomic<std::shared_ptr<const HostHudState>> state;
     std::atomic<std::shared_ptr<const HostHudQrImage>> qr;
+    std::atomic<std::shared_ptr<const HostHudActionEvent>> action;
     std::atomic<bool> lan_available{};
     std::atomic<std::uint64_t> lan_revision{};
     LanStateMonitor network;
     HostHudRenderer physical_renderer;
+    HostHudActionRenderer action_renderer;
     PhysicalHudOutput physical_output;
     HostHudController controller;
     std::atomic<std::uint64_t> program_instance{}, discontinuity_revision{};
     std::atomic<bool> refresh_pending{};
     bool animation_timer_active{};
+    double animation_timer_deadline{};
     ShowHostLanStateCallback callback{};
     void* callback_context{};
 };
@@ -26,4 +29,5 @@ struct HostHudCallbackRequest { ShowHostLanStateCallback callback{}; void* conte
 void refresh_host_lan_state(ShowHost& host);
 void request_host_hud_refresh(ShowHost& host);
 void render_physical_hud(ShowHost& host);
+void service_host_hud_timer(ShowHost& host);
 void release_physical_hud(ShowHost& host);

@@ -1,7 +1,9 @@
 #pragma once
 #include <memory>
 
-enum class HostHudIcon { wifi, phone, ethernet };
+enum class HostHudIcon {
+    wifi, phone, ethernet, play, pause, replay, skip, vocal, accompaniment, volume_up, volume_down,
+};
 class HostHudSvgIcons {
 public:
     HostHudSvgIcons();

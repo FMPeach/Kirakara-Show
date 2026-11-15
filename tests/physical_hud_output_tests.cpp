@@ -1,4 +1,4 @@
-#include "../apps/show_host/overlay/host_hud_state.h"
+#include "../apps/show_host/overlay/host_hud_renderer.h"
 #include "../apps/show_host/overlay/physical_hud_output.h"
 #include "kirakara/show/win32/d3d11_texture_surface.hpp"
 #include "kirakara/show/win32/stage_window_presenter.hpp"
@@ -46,18 +46,38 @@ int main() {
         PhysicalHudOutput output;
         expect(output.initialize(window, renderer.native_d3d_device()),
             "attach DComp above existing HWND swap chain");
-        expect(output.present(card.native_texture(), 520, 20, 1), "present small HUD");
+        HostHudLayers layers;
+        layers.card = {card.native_texture(), 520, 20, 100, 60, 1, true};
+        expect(output.present(layers), "present small HUD");
         for (int i = 0; i < 100; ++i) {
-            expect(output.present(card.native_texture(), 520, 20, 1), "reuse static HUD");
+            expect(output.present(layers), "reuse static HUD");
         }
         expect(output.submissions() == 1, "static HUD never creates a frame pump");
-        expect(output.set_visible(false) && output.set_visible(true), "toggle card only");
+        expect(output.present({}) && output.present(layers), "toggle card only");
         expect(output.submissions() == 1, "visibility keeps existing pixels");
-        expect(output.present(card.native_texture(), 500, 25, 2), "refresh changed HUD");
+        layers.card.x = 500; layers.card.y = 25; ++layers.card.revision;
+        expect(output.present(layers), "refresh changed HUD");
         expect(output.submissions() == 2, "one present per content revision");
-        for (int i = 0; i <= 10; ++i)
-            expect(output.present(card.native_texture(), 500, 25, 2, i / 10.0F), "opacity-only composition update");
+        for (int i = 0; i <= 10; ++i) {
+            layers.card.opacity = i / 10.0F;
+            expect(output.present(layers), "opacity-only composition update");
+        }
         expect(output.submissions() == 2, "fades never copy or present the cached bitmap again");
+        HostHudActionRenderer action;
+        layers.card.layout_ready = true;
+        layers.action = action.render(renderer.native_d3d_device(), 640, 360,
+            layers.card, {HostHudAction::pause, 1});
+        expect(layers.action.visible && output.present(layers)
+            && output.submissions() == 3, "both tiles share the HWND target");
+        const auto initial_y = layers.action.y;
+        layers.card.y += 10;
+        layers.action = action.render(renderer.native_d3d_device(), 640, 360,
+            layers.card, {HostHudAction::pause, .5F});
+        expect(layers.action.y == initial_y + 10 && output.present(layers)
+            && output.submissions() == 3, "move and fade two cached tiles without another present");
+        layers.card.visible = false;
+        expect(output.present(layers) && output.submissions() == 3, "action survives independently");
+        expect(output.present({}) && output.submissions() == 3, "hide both without new pixels");
         expect(renderer.rendered_frames() == 1 && !preview.peek_latest(),
             "HUD changes never render or publish clean preview frames");
         expect(clean->timing.generation == 1 && clean->timing.frame_id == 0,

@@ -104,13 +104,14 @@ void* active_cast_stage_texture(CastSession& cast) {
     return cast.stage_renderer.compositor().current_frame().overlay_texture;
 }
 
-static const HostHudFrame& render_cast_hud(CastSession& cast, const CastProgramSnapshot& snapshot) {
+static HostHudLayers render_cast_hud(CastSession& cast, const CastProgramSnapshot& snapshot) {
     const auto state = cast.program.hud_state ? cast.program.hud_state->load() : nullptr;
     const auto qr = cast.program.hud_qr ? cast.program.hud_qr->load() : nullptr;
     const bool lan = cast.program.lan_available && cast.program.lan_available->load()
         && qr && cast.program.lan_revision && qr->network_revision == cast.program.lan_revision->load();
     const auto canvas = active_cast_canvas(cast);
     const auto* program = &snapshot;
+    const auto now = cast_monotonic_seconds();
     HostHudPresentation presentation;
     if (program && cast.program.hud_controller && cast.program.valid()) {
         const auto state_value = cast.program.playback_state->load();
@@ -120,20 +121,28 @@ static const HostHudFrame& render_cast_hud(CastSession& cast, const CastProgramS
         presentation = cast.program.hud_controller->update({
             program->hud_program_instance, program->hud_discontinuity_revision,
             cast.program.published_position->load(), cast.program.published_duration->load(),
-            cast_monotonic_seconds(), active,
+            now, active,
             state_value == SHOW_STATE_PLAYING && !cast.program.published_buffering->load()
                 && !lifecycle.start_gate_pending,
             cast.lifecycle.program_ready_for(program->video_timeline_revision),
             lifecycle.holding_previous_output || cast.load_keepalive_active.load()});
     }
-    return cast.hud_renderer.render(cast.stage_renderer.native_d3d_device(),
+    auto* device = cast.stage_renderer.native_d3d_device();
+    HostHudLayers layers;
+    layers.card = cast.hud_renderer.render(device,
         canvas.width, canvas.height, state.get(), qr, lan, presentation);
+    if (cast.program.hud_action) {
+        const auto event = cast.program.hud_action->load();
+        layers.action = cast.hud_action_renderer.render(device, canvas.width,
+            canvas.height, layers.card, evaluate_host_hud_action(event.get(), now));
+    }
+    return layers;
 }
 
 static std::shared_ptr<const D3D11Nv12CompositedFrame> compose_cast_nv12_overlays(
         CastSession& cast, const std::shared_ptr<const CastNormalizedVideoFrame>& base,
         const CastProgramSnapshot& program, double time, bool draw_program,
-        const HostHudFrame& hud) {
+        const HostHudLayers& hud) {
     static const kirakara::show::PreparedDocument empty_document;
     static const kirakara::show::SongTitleConfig empty_title;
     if (!base || !cast.overlay_renderer.render(
@@ -1421,7 +1430,7 @@ static void render_cast_compute_nv12_frame(
     std::shared_ptr<const D3D11Nv12CompositedFrame> candidate;
     std::shared_ptr<const CastNormalizedVideoFrame> candidate_base;
     bool candidate_is_current_program{};
-    const auto& hud = render_cast_hud(host.cast, *host.program);
+    const auto hud = render_cast_hud(host.cast, *host.program);
     if (hold_previous_program) {
         // Keep the old program pixels/time, while allowing new HUD/network
         // state to replace a card even during starvation or a source handoff.
@@ -1835,6 +1844,7 @@ void reset_cast_nv12_pipeline(CastSession& cast) noexcept {
     cast.last_overlay_program.reset();
     cast.hud_bgra_layer.reset();
     cast.hud_renderer.reset();
+    cast.hud_action_renderer.reset();
     cast.last_nv12_frame.reset();
     cast.nv12_background_frame.reset();
     cast.nv12_background_source.reset();

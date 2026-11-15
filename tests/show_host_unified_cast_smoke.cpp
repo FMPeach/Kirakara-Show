@@ -511,7 +511,7 @@ void run_cast_soak(
 int wmain(int argc, wchar_t** argv) {
     expect(argc >= 9,
         "usage: smoke video1 krl1 vocal1 inst1 video2 krl2 vocal2 inst2 "
-        "[--soak-seconds=N]");
+        "[--soak-seconds=N] [--hud]");
     const auto soak_duration = parse_soak_duration(argc, argv);
     auto host = show_host_create();
     expect(host != nullptr, "create ShowHost");
@@ -542,6 +542,11 @@ int wmain(int argc, wchar_t** argv) {
     expect(show_host_set_cast_pipeline_trace_enabled(host, true),
         "enable detailed Cast trace");
     expect(show_host_start_cast_stream(host, 0), "start Unified Cast stream");
+    std::uint64_t action_sequence{};
+    const auto action = [&](std::uint32_t kind) {
+        if (test_hud) expect(show_host_notify_playback_action(host, kind, ++action_sequence),
+            "publish Cast action without touching transport");
+    };
     expect(show_host_get_active_video_decoder_owners(host) == 0,
         "idle Cast unexpectedly owns a video source");
     const auto port = show_host_get_cast_stream_port(host);
@@ -589,6 +594,7 @@ int wmain(int argc, wchar_t** argv) {
             SHOW_CLOCK_AUDIO_MASTER, SHOW_TRANSITION_HARD),
         "cold first-song load");
     show_host_play(host);
+    action(SHOW_HOST_HUD_ACTION_PLAY);
     std::this_thread::sleep_for(5s);
     expect(show_host_get_active_video_decoder_owners(host) == 1,
         "Cast playback did not reduce video decoding to one source owner");
@@ -633,6 +639,7 @@ int wmain(int argc, wchar_t** argv) {
     timed_load(argv[5], argv[6], argv[7], argv[8],
         SHOW_CLOCK_VIDEO_MASTER, SHOW_TRANSITION_SEAMLESS,
         "rapid final next-song replacement load");
+    action(SHOW_HOST_HUD_ACTION_SKIP);
     show_host_play(host);
     std::this_thread::sleep_for(6s);
     auto second_playing = client.counts();
@@ -642,7 +649,15 @@ int wmain(int argc, wchar_t** argv) {
         "video-master Cast reactivated a hidden MediaEngine decoder");
 
     show_host_pause(host);
-    std::this_thread::sleep_for(2s);
+    action(SHOW_HOST_HUD_ACTION_PAUSE);
+    if (test_hud) {
+        hud.queue_count = 3;
+        ++hud.revision;
+        expect(show_host_set_audience_hud_state(host, &hud), "shrink list while Cast is paused");
+        action(SHOW_HOST_HUD_ACTION_ACCOMPANIMENT);
+        action(SHOW_HOST_HUD_ACTION_VOLUME_DOWN);
+    }
+    std::this_thread::sleep_for(test_hud ? 3300ms : 2000ms);
     auto paused = client.counts();
     expect_progress(second_playing, paused,
         "paused broadcast keepalive");
@@ -656,6 +671,7 @@ int wmain(int argc, wchar_t** argv) {
     // from the reconnect/replay check below: pause/resume must retain the
     // current decoder queue and must not get stuck behind a cold-start gate.
     show_host_play(host);
+    action(SHOW_HOST_HUD_ACTION_PLAY);
     const auto resume_deadline =
         std::chrono::steady_clock::now() + 5s;
     bool resumed{};
@@ -681,6 +697,7 @@ int wmain(int argc, wchar_t** argv) {
         "receiver reconnects without restarting Cast");
     show_host_seek(host, 0.0);
     show_host_play(host);
+    action(SHOW_HOST_HUD_ACTION_REPLAY);
     std::this_thread::sleep_for(3s);
     auto replayed = reconnected.counts();
     expect(replayed.video > 0 && replayed.audio > 0,

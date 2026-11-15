@@ -3,8 +3,10 @@
 #include <cstdint>
 #include <memory>
 
+struct HostHudLayers;
+
 // Host-owned small composition layer above the existing Stage HWND output.
-// It consumes a cached BGRA texture and never writes a shared program frame.
+// Both cached tiles are positioned in a single DComp transaction.
 class PhysicalHudOutput {
 public:
     PhysicalHudOutput();
@@ -13,9 +15,7 @@ public:
     PhysicalHudOutput& operator=(const PhysicalHudOutput&) = delete;
 
     [[nodiscard]] bool initialize(void* hwnd, void* d3d_device);
-    [[nodiscard]] bool present(void* texture, float left, float top,
-        std::uint64_t content_revision, float opacity = 1.0F);
-    [[nodiscard]] bool set_visible(bool visible);
+    [[nodiscard]] bool present(const HostHudLayers& layers);
     void shutdown() noexcept;
     [[nodiscard]] bool initialized() const noexcept;
     [[nodiscard]] std::uint64_t submissions() const noexcept;

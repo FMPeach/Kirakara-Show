@@ -328,7 +328,8 @@ int main() {
         expect(card.resize_on_device(device, 100, 30), "HUD texture");
         card.begin_draw(); card.clear({1, 0, 0, .8F});
         expect(card.end_draw(), "HUD fill"); card.flush_d2d();
-        HostHudFrame hud{card.native_texture(), 200, 4, 100, 30, 1, true};
+        HostHudLayers hud;
+        hud.card = {card.native_texture(), 200, 4, 100, 30, 1, true};
         auto low_style = style; low_style.line1_y = 600;
         expect(overlay.render(document, empty_title, 1.5, engine, low_style, 5,
             lyric_renderer, &title_renderer, &hud), "lyrics plus top HUD");
@@ -338,7 +339,7 @@ int main() {
             lyric_renderer, &title_renderer, &hud) && overlay.frame().content_version == version,
             "static combined overlay reuses texture");
         const auto before_fade = read_bgra(device, context, static_cast<ID3D11Texture2D*>(overlay.frame().texture));
-        hud.opacity = .5F;
+        hud.card.opacity = .5F;
         expect(overlay.render(document, empty_title, 1.5, engine, low_style, 5,
             lyric_renderer, &title_renderer, &hud) && overlay.frame().content_version == version + 1,
             "opacity alone invalidates the small Cast HUD region");
@@ -353,10 +354,10 @@ int main() {
         expect(overlay.render(document, empty_title, 1.5, engine, low_style, 5,
             lyric_renderer, &title_renderer, &hud) && !overlay.frame().changed,
             "stable partial opacity is still cached");
-        hud.x = 0; hud.y = 130; hud.opacity = .75F;
+        hud.card.x = 0; hud.card.y = 130; hud.card.opacity = .75F;
         expect(overlay.render(document, empty_title, 1.5, engine, low_style, 5,
             lyric_renderer, &title_renderer, &hud), "fade over a potentially overlapping lyric band");
-        hud.visible = false;
+        hud.card.visible = false;
         expect(overlay.render(document, empty_title, 1.5, engine, low_style, 5,
             lyric_renderer, &title_renderer, &hud), "HUD removed during held program");
         pixels = read_bgra(device, context, static_cast<ID3D11Texture2D*>(overlay.frame().texture));
@@ -364,6 +365,55 @@ int main() {
         expect(std::equal(pixels.begin() + 60 * 320 * 4, pixels.end(),
             before_fade.begin() + 60 * 320 * 4), "overlapping HUD removal restores the unchanged lyric pixels");
         expect(overlay.frame().coverage_count == 1, "lyric-only ROI restored");
+
+        const auto clean = pixels;
+        HostHudActionRenderer actions;
+        hud.card = {card.native_texture(), 200, 4, 100, 30, 1, true, 1, false, true};
+        hud.action = actions.render(device, 320, 180, hud.card, {HostHudAction::play, 1});
+        expect(hud.action.visible && hud.action.y == 38, "Cast A action under the card");
+        expect(overlay.render(document, empty_title, 1.5, engine, low_style, 5,
+            lyric_renderer, &title_renderer, &hud), "add action independently");
+        expect(overlay.frame().coverage_count == 3, "main HUD, action and lyrics have separate ROIs");
+        const auto first = read_bgra(device, context, static_cast<ID3D11Texture2D*>(overlay.frame().texture));
+        hud.action.opacity = .5F;
+        expect(overlay.render(document, empty_title, 1.5, engine, low_style, 5,
+            lyric_renderer, &title_renderer, &hud), "fade action only");
+        const auto faded = read_bgra(device, context, static_cast<ID3D11Texture2D*>(overlay.frame().texture));
+        const auto dirty = overlay.frame().dirty_rect;
+        expect(dirty.x >= hud.action.x - 1 && dirty.y >= hud.action.y - 1
+            && dirty.y + dirty.height <= hud.action.y + hud.action.height + 1,
+            "only the action's even-aligned rectangle is dirty");
+        expect(!std::equal(faded.begin(), faded.end(), first.begin()), "action actually fades");
+        expect(std::equal(faded.begin(), faded.begin() + 34 * 320 * 4, first.begin()),
+            "action fade leaves main HUD pixels unchanged");
+        const auto old_center = ((hud.action.y + hud.action.height / 2) * 320
+            + hud.action.x + hud.action.width / 2) * 4;
+        hud.action.y = 64;
+        expect(overlay.render(document, empty_title, 1.5, engine, low_style, 5,
+            lyric_renderer, &title_renderer, &hud), "move action below a taller HUD");
+        pixels = read_bgra(device, context, static_cast<ID3D11Texture2D*>(overlay.frame().texture));
+        expect(pixels[old_center + 3] == 0 && first[old_center + 3] > 0, "moving clears old action pixels");
+        // If a custom subtitle band meets the tile, its UV-aligned region
+        // must not be dispatched a second time.
+        const auto band = overlay.frame().coverage_regions[0];
+        hud.action.y = band.y > 4 ? band.y - 4 : band.y;
+        expect(overlay.render(document, empty_title, 1.5, engine, low_style, 5,
+                lyric_renderer, &title_renderer, &hud), "action can straddle the subtitle band");
+        const auto& coverage = overlay.frame();
+        for (std::uint32_t i = 0; i < coverage.coverage_count; ++i) {
+            const auto a = coverage.coverage_regions[i];
+            for (std::uint32_t j = i + 1; j < coverage.coverage_count; ++j) {
+                const auto b = coverage.coverage_regions[j];
+                expect(a.x + a.width <= b.x || b.x + b.width <= a.x
+                    || a.y + a.height <= b.y || b.y + b.height <= a.y,
+                    "NV12 ROI dispatches never overlap");
+            }
+        }
+        hud = {};
+        expect(overlay.render(document, empty_title, 1.5, engine, low_style, 5,
+            lyric_renderer, &title_renderer, &hud), "remove both HUD tiles");
+        expect(read_bgra(device, context, static_cast<ID3D11Texture2D*>(overlay.frame().texture)) == clean,
+            "Cast A restores exactly the program overlay");
     }
     overlay.reset();
     title_renderer.shutdown();

@@ -108,6 +108,37 @@ bool intersects(const CastOverlayRect& a, const CastOverlayRect& b) noexcept {
         && a.y < b.y + b.height && b.y < a.y + a.height;
 }
 
+CastOverlayRect tile_coverage(const HostHudFrame& tile,
+        std::uint32_t width, std::uint32_t height) noexcept {
+    if (!tile.visible) return {};
+    const auto left = tile.x & ~1U, top = tile.y & ~1U;
+    const auto right = std::min(width, (tile.x + tile.width + 1U) & ~1U);
+    const auto bottom = std::min(height, (tile.y + tile.height + 1U) & ~1U);
+    if (left >= right || top >= bottom) return {};
+    return {left, top, right - left, bottom - top};
+}
+
+void append_tile_coverage(CastOverlayFrame& frame, const CastOverlayRect& band,
+        const CastOverlayRect& tile) noexcept {
+    if (tile.empty()) return;
+    if (!intersects(band, tile)) {
+        frame.coverage_regions[frame.coverage_count++] = tile;
+        return;
+    }
+    // The program band already spans the full width. Only dispatch the parts
+    // of the tile outside it, not the full-width span of the tile as well.
+    if (tile.y < band.y) {
+        frame.coverage_regions[frame.coverage_count++] =
+            {tile.x, tile.y, tile.width, band.y - tile.y};
+    }
+    const auto band_bottom = band.y + band.height;
+    const auto tile_bottom = tile.y + tile.height;
+    if (band_bottom < tile_bottom) {
+        frame.coverage_regions[frame.coverage_count++] =
+            {tile.x, band_bottom, tile.width, tile_bottom - band_bottom};
+    }
+}
+
 void include_title_band(
         DesignBand& band,
         const kirakara::show::SongTitleConfig& title) noexcept {
@@ -241,12 +272,11 @@ struct CastOverlayRenderer::Impl {
     kirakara::show::win32::D3D11TextureSurface surface;
     CastPipelineDiagnostics* diagnostics{};
     CastOverlayFrame frame;
-    std::uint64_t last_signature{};
     std::uint64_t last_program_signature{};
     bool signature_valid{};
     CastOverlayRect previous_coverage;
-    CastOverlayRect previous_hud;
-    HostHudBlitter hud_blitter;
+    std::array<HostHudFrame, 2> previous_hud;
+    std::array<HostHudBlitter, 2> hud_blitters;
 
     bool clear_transparent() {
         surface.begin_draw();
@@ -294,12 +324,11 @@ struct CastOverlayRenderer::Impl {
         surface = {};
         diagnostics = nullptr;
         frame = {};
-        last_signature = 0;
         last_program_signature = 0;
         signature_valid = false;
         previous_coverage = {};
         previous_hud = {};
-        hud_blitter.reset();
+        for (auto& blitter : hud_blitters) blitter.reset();
     }
 
     bool render(
@@ -311,7 +340,7 @@ struct CastOverlayRenderer::Impl {
             std::uint64_t content_revision,
             kirakara::show::win32::LyricRenderer& lyric_renderer,
             kirakara::show::win32::SongTitleRenderer* title_renderer,
-            const HostHudFrame* hud) {
+            const HostHudLayers* hud) {
         if (!frame.texture || frame.width == 0 || frame.height == 0) {
             return false;
         }
@@ -325,64 +354,75 @@ struct CastOverlayRenderer::Impl {
             && kirakara::show::song_title_has_drawable_content(title)
             && title_opacity > 0.0F;
         const bool lyrics_active = frame_has_visible_lyrics(lyric_frame);
-        const bool hud_visible = hud && hud->visible;
-        const bool empty = !title_active && !lyrics_active && !hud_visible;
+        const auto layers = hud ? *hud : HostHudLayers{};
+        const std::array tiles{layers.card, layers.action};
+        const auto empty = !title_active && !lyrics_active && !tiles[0].visible && !tiles[1].visible;
         const auto program_signature = overlay_signature(
             lyric_frame, title_opacity, title_active, lyrics_active,
             content_revision);
-        auto signature = program_signature;
-        hash_value(signature, hud_visible);
-        CastOverlayRect hud_rect;
-        if (hud_visible) {
-            hash_value(signature, hud->revision);
-            hash_value(signature, std::bit_cast<std::uint32_t>(hud->opacity));
-            hash_value(signature, reinterpret_cast<std::uintptr_t>(hud->texture));
-            hash_value(signature, hud->x); hash_value(signature, hud->y);
-            const auto left = hud->x & ~1U, top = hud->y & ~1U;
-            const auto right = std::min(frame.width, (hud->x + hud->width + 1U) & ~1U);
-            const auto bottom = std::min(frame.height, (hud->y + hud->height + 1U) & ~1U);
-            if (left < right && top < bottom) hud_rect = {left, top, right - left, bottom - top};
-        }
         const auto current_coverage = overlay_coverage(
             lyric_frame, title_active, lyrics_active, title, engine, style,
             frame.width, frame.height);
+        const auto tile_rect = [&](const HostHudFrame& tile) {
+            return tile_coverage(tile, frame.width, frame.height);
+        };
+        const std::array current{current_coverage, tile_rect(tiles[0]), tile_rect(tiles[1])};
+        const std::array previous{previous_coverage, tile_rect(previous_hud[0]),
+            tile_rect(previous_hud[1])};
 
         frame.changed = false;
         frame.dirty_rect = {};
-        frame.coverage_rect = union_rect(current_coverage, hud_rect);
+        frame.coverage_rect = union_rect(union_rect(current[0], current[1]), current[2]);
         frame.coverage_regions = {};
         frame.coverage_count = 0;
-        if (!current_coverage.empty()) frame.coverage_regions[frame.coverage_count++] = current_coverage;
-        if (!hud_rect.empty()) frame.coverage_regions[frame.coverage_count++] = hud_rect;
+        if (!current[0].empty()) frame.coverage_regions[frame.coverage_count++] = current[0];
+        // Rounding out to even texels can touch at very small output sizes.
+        if (intersects(current[1], current[2])) {
+            append_tile_coverage(frame, current[0], union_rect(current[1], current[2]));
+        } else {
+            append_tile_coverage(frame, current[0], current[1]);
+            append_tile_coverage(frame, current[0], current[2]);
+        }
         frame.title_drawn = title_active;
         frame.lyrics_drawn = lyrics_active;
-        if (signature_valid && signature == last_signature
-                && frame.empty == empty) {
-            return true;
-        }
-        if (empty && frame.empty) {
-            last_signature = signature;
+        std::array dirty{
+            !signature_valid || program_signature != last_program_signature,
+            !signature_valid || !tiles[0].same_pixels(previous_hud[0]),
+            !signature_valid || !tiles[1].same_pixels(previous_hud[1]),
+        };
+        if (empty && frame.empty && previous[0].empty()
+                && previous[1].empty() && previous[2].empty()) {
             last_program_signature = program_signature;
             signature_valid = true;
             return true;
         }
+        if (!dirty[0] && !dirty[1] && !dirty[2]) return true;
 
         const auto started = diagnostics
             ? CastPipelineDiagnostics::qpc_now() : 0;
-        const auto hud_dirty = union_rect(previous_hud, hud_rect);
-        // A card-only fade need not redraw a static title/lyric band elsewhere.
-        // Overlap still takes the normal full-layer path to preserve stacking.
-        const bool hud_only = signature_valid && program_signature == last_program_signature
-            && !intersects(current_coverage, hud_dirty);
-        const auto dirty_rect = hud_only ? hud_dirty
-            : union_rect(union_rect(previous_coverage, current_coverage), hud_dirty);
-        if ((!hud_only && (!clear_transparent(previous_coverage) || !clear_transparent(current_coverage)))
-                || !clear_transparent(previous_hud) || !clear_transparent(hud_rect)) {
-            signature_valid = false;
-            previous_coverage = {0, 0, frame.width, frame.height};
-            return false;
+        // Rebuild only affected layers. If clearing an old/new rectangle
+        // touches another layer, redraw both in order (even on a held frame).
+        for (std::size_t pass = 0; pass < dirty.size(); ++pass) {
+            for (std::size_t i = 0; i < dirty.size(); ++i) {
+                if (!dirty[i]) continue;
+                for (std::size_t j = 0; j < dirty.size(); ++j) {
+                    if (dirty[j]) continue;
+                    dirty[j] = intersects(previous[i], current[j])
+                        || intersects(current[i], current[j]);
+                }
+            }
         }
-        if (title_active && !hud_only) {
+        // Leave a recoverable invalid cache if a draw fails partway through.
+        signature_valid = false;
+        previous_coverage = {0, 0, frame.width, frame.height};
+        CastOverlayRect dirty_rect;
+        for (std::size_t i = 0; i < dirty.size(); ++i) {
+            if (!dirty[i]) continue;
+            dirty_rect = union_rect(dirty_rect, union_rect(previous[i], current[i]));
+            if (!clear_transparent(previous[i])
+                    || (previous[i] != current[i] && !clear_transparent(current[i]))) return false;
+        }
+        if (title_active && dirty[0]) {
             if (!title_renderer->attach_native_target(
                     surface.native_render_target())
                     || !title_renderer->render(
@@ -390,7 +430,7 @@ struct CastOverlayRenderer::Impl {
                 return false;
             }
         }
-        if (lyrics_active && !hud_only) {
+        if (lyrics_active && dirty[0]) {
             if (!lyric_renderer.attach_native_target(
                     surface.native_render_target())
                     || !lyric_renderer.render_overlay_frame(
@@ -398,7 +438,9 @@ struct CastOverlayRenderer::Impl {
                 return false;
             }
         }
-        if (hud_visible && !hud_blitter.draw(surface.native_render_target(), *hud)) return false;
+        for (std::size_t i = 0; i < tiles.size(); ++i) {
+            if (dirty[i + 1] && !hud_blitters[i].draw(surface.native_render_target(), tiles[i])) return false;
+        }
         surface.flush_d2d();
 
         ++frame.content_version;
@@ -406,8 +448,7 @@ struct CastOverlayRenderer::Impl {
         frame.changed = true;
         frame.dirty_rect = dirty_rect;
         previous_coverage = current_coverage;
-        previous_hud = hud_rect;
-        last_signature = signature;
+        previous_hud = tiles;
         last_program_signature = program_signature;
         signature_valid = true;
         if (diagnostics) {
@@ -450,7 +491,7 @@ bool CastOverlayRenderer::render(
         std::uint64_t content_revision,
         kirakara::show::win32::LyricRenderer& lyric_renderer,
         kirakara::show::win32::SongTitleRenderer* title_renderer,
-        const HostHudFrame* hud) {
+        const HostHudLayers* hud) {
     return impl_ && impl_->render(document, title, current_time,
         engine, style, content_revision, lyric_renderer, title_renderer, hud);
 }

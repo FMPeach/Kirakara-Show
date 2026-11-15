@@ -291,6 +291,30 @@ SHOW_HOST_API bool show_host_set_audience_hud_state(ShowHostHandle handle,
     } catch (...) { return false; }
 }
 
+SHOW_HOST_API bool show_host_notify_playback_action(
+        ShowHostHandle handle, std::uint32_t action, std::uint64_t sequence) {
+    auto* host = as_host(handle);
+    if (!host || !host->window || action > SHOW_HOST_HUD_ACTION_VOLUME_DOWN || !sequence) return false;
+    try {
+        const auto kind = static_cast<HostHudAction>(action);
+        auto previous = host->hud.action.load();
+        if (previous && previous->sequence >= sequence) return true;
+        const auto now = std::chrono::duration<double>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        while (!previous || previous->sequence < sequence) {
+            const bool pause_active = kind == HostHudAction::pause
+                || (is_host_hud_audio_action(kind) && previous && previous->pause_active);
+            const auto event = std::make_shared<const HostHudActionEvent>(
+                HostHudActionEvent{kind, sequence, now, pause_active});
+            if (host->hud.action.compare_exchange_strong(previous, event)) {
+                request_host_hud_refresh(*host);
+                return true;
+            }
+        }
+        return true;
+    } catch (...) { return false; }
+}
+
 SHOW_HOST_API bool show_host_set_phone_order_qr_image(ShowHostHandle handle,
         const ShowHostPhoneOrderQrImage* input) {
     auto* host = as_host(handle);

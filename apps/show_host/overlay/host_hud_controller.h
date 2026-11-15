@@ -30,6 +30,32 @@ struct HostHudAppearance {
     bool animating{};
 };
 
+enum class HostHudAction : std::uint32_t {
+    none, play, pause, replay, skip, vocal, accompaniment, volume_up, volume_down,
+};
+
+[[nodiscard]] constexpr bool is_host_hud_audio_action(HostHudAction action) noexcept {
+    return action >= HostHudAction::vocal && action <= HostHudAction::volume_down;
+}
+
+struct HostHudActionEvent {
+    HostHudAction action{};
+    std::uint64_t sequence{};
+    double started{};
+    bool pause_active{};
+};
+
+struct HostHudActionAppearance {
+    HostHudAction action{};
+    float opacity{};
+    bool animating{};
+    // An idle physical output needs only one wake-up before the fade starts.
+    double next_deadline{};
+};
+
+[[nodiscard]] HostHudActionAppearance evaluate_host_hud_action(
+    const HostHudActionEvent* event, double now) noexcept;
+
 // Whole-card opacity follows scene changes. Row-content blending belongs to
 // the renderer; metadata updates never restart this transition or a countdown.
 class HostHudTransition {

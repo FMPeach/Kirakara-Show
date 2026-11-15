@@ -10,6 +10,48 @@ void expect(bool value, const char* message) {
 }
 void near(float value, float target, const char* message) { expect(std::abs(value - target) < .001F, message); }
 int main() {
+    {
+        HostHudActionEvent event{HostHudAction::play, 1, 10};
+        auto action = evaluate_host_hud_action(&event, 12.99);
+        expect(action.action == HostHudAction::play && !action.animating
+            && action.next_deadline == 13, "play stays static until fade deadline");
+        near(action.opacity, 1, "play stays opaque for three seconds");
+        action = evaluate_host_hud_action(&event, 13.1);
+        near(action.opacity, .5F, "action fades only for 200ms");
+        expect(action.animating && action.next_deadline == 0, "fade needs bounded ticks");
+        expect(evaluate_host_hud_action(&event, 13.201).action == HostHudAction::none,
+            "expired events never replay on another output");
+        event = {HostHudAction::pause, 2, 13.1};
+        action = evaluate_host_hud_action(&event, 1000);
+        expect(action.action == HostHudAction::pause && action.opacity == 1
+            && !action.animating && action.next_deadline == 0, "pause stays without a timer");
+        event = {HostHudAction::replay, 3, 1000};
+        event = {HostHudAction::skip, 4, 1000.1};
+        action = evaluate_host_hud_action(&event, 1003.05);
+        expect(action.action == HostHudAction::skip && action.opacity == 1,
+            "newest action owns its own deadline");
+        event = {HostHudAction::none, 5, 1003.1};
+        expect(evaluate_host_hud_action(&event, 1003.1).opacity == 0, "clear removes persistent action");
+    }
+    for (const auto kind : {HostHudAction::vocal, HostHudAction::accompaniment,
+                           HostHudAction::volume_up, HostHudAction::volume_down}) {
+        const HostHudActionEvent paused{kind, 1, 60, true};
+        const auto visible = evaluate_host_hud_action(&paused, 62.999);
+        expect(visible.action == kind && visible.opacity == 1
+            && !visible.animating && visible.next_deadline == 63,
+            "paused audio action replaces pause without blending");
+        const auto restored = evaluate_host_hud_action(&paused, 63);
+        expect(restored.action == HostHudAction::pause && restored.opacity == 1
+            && !restored.animating && restored.next_deadline == 0,
+            "paused audio action cuts straight back to persistent pause");
+        const HostHudActionEvent playing{kind, 2, 60, false};
+        const auto fading = evaluate_host_hud_action(&playing, 63.1);
+        expect(fading.action == kind && fading.animating, "playing audio action fades normally");
+        near(fading.opacity, .5F, "playing audio action uses the existing fade");
+        expect(evaluate_host_hud_action(&playing, 63.201).action == HostHudAction::none,
+            "playing audio action expires");
+    }
+
     HostHudController controller;
     HostHudClockInput in{1, 0, 0, 100, 0, true, true, false};
     expect(!controller.update(in).queue_visible, "request alone never starts takeover timer");

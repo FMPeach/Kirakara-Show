@@ -27,4 +27,5 @@ Kirakara Show 自有代码使用仓库根目录中的 [MIT License](LICENSE)。�
 - License: ISC；Feather 衍生的 `smartphone` 图标另保留 MIT 声明
 - Local license: [third_party/lucide/LICENSE.txt](third_party/lucide/LICENSE.txt)
 
-观众浮窗使用其中的 `wifi`、`smartphone` 和 `ethernet-port` 图标。
+观众浮窗使用其中的 `wifi`、`smartphone` 和 `ethernet-port` 图标。播放操作提示使用
+`play`、`pause`、`rotate-ccw`、`skip-forward`、`audio-lines`、`mic`、`volume-1` 和 `volume-2`。

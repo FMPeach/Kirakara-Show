@@ -11,7 +11,7 @@
 #include <array>
 #include <memory>
 
-struct HostHudFrame;
+struct HostHudLayers;
 
 class CastPipelineDiagnostics;
 
@@ -20,6 +20,8 @@ struct CastOverlayRect {
     std::uint32_t y{};
     std::uint32_t width{};
     std::uint32_t height{};
+
+    bool operator==(const CastOverlayRect&) const = default;
 
     [[nodiscard]] constexpr bool empty() const noexcept {
         return width == 0 || height == 0;
@@ -37,8 +39,9 @@ struct CastOverlayFrame {
     bool changed{};
     bool title_drawn{};
     bool lyrics_drawn{};
-    // Independent bands avoid dispatching the empty gap between top HUD and lyrics.
-    std::array<CastOverlayRect, 2> coverage_regions{};
+    // Program band and precise tile coverage. A tile straddling the band can
+    // contribute both a strip above and a strip below it.
+    std::array<CastOverlayRect, 5> coverage_regions{};
     std::uint32_t coverage_count{};
 };
 
@@ -69,7 +72,7 @@ public:
         std::uint64_t content_revision,
         kirakara::show::win32::LyricRenderer& lyric_renderer,
         kirakara::show::win32::SongTitleRenderer* title_renderer = nullptr,
-        const HostHudFrame* hud = nullptr);
+        const HostHudLayers* hud = nullptr);
 
     [[nodiscard]] const CastOverlayFrame& frame() const noexcept;
 

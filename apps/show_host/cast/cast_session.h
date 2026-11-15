@@ -66,6 +66,7 @@ struct CastProgramBindings {
     const std::atomic<bool>* lan_available{};
     HostHudController* hud_controller{};
     const std::atomic<std::uint64_t>* lan_revision{};
+    const std::atomic<std::shared_ptr<const HostHudActionEvent>>* hud_action{};
 
     [[nodiscard]] bool valid() const noexcept;
 };
@@ -83,6 +84,7 @@ struct CastSession {
     kirakara::show::win32::SongTitleRenderer title_renderer;
     CastStageRenderer stage_renderer;
     HostHudRenderer hud_renderer;
+    HostHudActionRenderer hud_action_renderer;
     HostHudRetainedBgraLayer hud_bgra_layer;
     std::shared_ptr<const CastNormalizedVideoFrame> last_overlay_base;
     std::shared_ptr<const CastProgramSnapshot> last_overlay_program;

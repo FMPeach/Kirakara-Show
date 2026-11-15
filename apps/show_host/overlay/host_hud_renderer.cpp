@@ -164,6 +164,7 @@ const HostHudFrame& HostHudRenderer::render(void* device, std::uint32_t width,
     auto& p = *impl_;
     p.frame.visible = false;
     p.frame.animating = false;
+    p.frame.layout_ready = false;
     if (!device || !width || !height || !state) return p.frame;
     const bool qr_allowed = state->options.qr_enabled && lan_available && image && image->valid();
     const auto desired = presentation.queue_visible && state->options.queue_enabled ? HostHudScene::queue
@@ -175,7 +176,7 @@ const HostHudFrame& HostHudRenderer::render(void* device, std::uint32_t width,
     p.frame.animating = appearance.animating;
     if (appearance.scene == HostHudScene::hidden) return p.frame;
     const bool queue_mode = appearance.scene == HostHudScene::queue;
-    const float scale = std::min(width / 1920.0F, height / 1080.0F);
+    const float scale = host_hud_scale(width, height);
     const bool has_current = !state->current.title.empty() || !state->current.artist.empty();
     const auto rows = (has_current ? 1U : 0U) + std::max<std::size_t>(1, state->queue.size());
     const float logical_height = queue_mode ? 105.0F + 70.0F * rows : 244.0F;
@@ -195,8 +196,8 @@ const HostHudFrame& HostHudRenderer::render(void* device, std::uint32_t width,
         && desired == HostHudScene::queue && !appearance.animating && appearance.opacity == 1
         && presentation.transitions_enabled && std::isfinite(presentation.monotonic_seconds)
         && p.device == device && p.width == width && p.height == height && p.capture_queue();
-    p.frame.x = width - std::min(width, card_w + static_cast<std::uint32_t>(std::round(50 * scale)));
-    p.frame.y = static_cast<std::uint32_t>(std::round(40 * scale));
+    p.frame.x = width - std::min(width, card_w + static_cast<std::uint32_t>(std::round(kHostHudRight * scale)));
+    p.frame.y = static_cast<std::uint32_t>(std::round(kHostHudTop * scale));
     p.frame.width = card_w; p.frame.height = card_h;
     if (changed) {
         p.queue_blending = false;
@@ -356,6 +357,7 @@ const HostHudFrame& HostHudRenderer::render(void* device, std::uint32_t width,
         p.frame.animating = p.frame.animating || p.queue_blending;
     }
     p.frame.texture = p.surface.native_texture();
-    p.frame.visible = p.ready && p.frame.texture != nullptr && p.frame.opacity > 0;
+    p.frame.layout_ready = p.ready && p.frame.texture != nullptr;
+    p.frame.visible = p.frame.layout_ready && p.frame.opacity > 0;
     return p.frame;
 }
