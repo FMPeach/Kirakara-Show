@@ -206,8 +206,9 @@ public:
         std::uint64_t timeline_revision,
         double raw_program_seconds,
         double raw_sample_seconds,
-        double projected_seconds,
-        bool hold_video_tail) const;
+        std::optional<double> projected_seconds,
+        bool hold_video_tail,
+        const std::shared_ptr<const DecodedD3D11VideoFrame>& last_submitted) const;
 
     [[nodiscard]] MfD3D11VideoBufferStatus buffer_status(
         const std::wstring& source,

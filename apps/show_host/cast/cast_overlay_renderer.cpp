@@ -334,7 +334,8 @@ struct CastOverlayRenderer::Impl {
     bool render(
             const kirakara::show::PreparedDocument& document,
             const kirakara::show::SongTitleConfig& title,
-            kirakara::show::Seconds current_time,
+            kirakara::show::Seconds program_time,
+            kirakara::show::Seconds lyric_time,
             const kirakara::show::EngineConfig& engine,
             const kirakara::show::RenderStyle& style,
             std::uint64_t content_revision,
@@ -345,10 +346,10 @@ struct CastOverlayRenderer::Impl {
             return false;
         }
         const auto lyric_frame = kirakara::show::evaluate_frame(
-            document, current_time, engine);
+            document, lyric_time, engine);
         const auto title_opacity = title_renderer
             ? kirakara::show::song_title_text_opacity(
-                current_time, title, engine.fade_duration)
+                program_time, title, engine.fade_duration)
             : 0.0F;
         const bool title_active = title_renderer
             && kirakara::show::song_title_has_drawable_content(title)
@@ -426,7 +427,7 @@ struct CastOverlayRenderer::Impl {
             if (!title_renderer->attach_native_target(
                     surface.native_render_target())
                     || !title_renderer->render(
-                        title, current_time, engine.fade_duration)) {
+                        title, program_time, engine.fade_duration)) {
                 return false;
             }
         }
@@ -434,7 +435,7 @@ struct CastOverlayRenderer::Impl {
             if (!lyric_renderer.attach_native_target(
                     surface.native_render_target())
                     || !lyric_renderer.render_overlay_frame(
-                        document, lyric_frame, current_time, engine, style)) {
+                        document, lyric_frame, lyric_time, engine, style)) {
                 return false;
             }
         }
@@ -485,14 +486,16 @@ void CastOverlayRenderer::reset() noexcept {
 bool CastOverlayRenderer::render(
         const kirakara::show::PreparedDocument& document,
         const kirakara::show::SongTitleConfig& title,
-        kirakara::show::Seconds current_time,
+        kirakara::show::Seconds program_time,
         const kirakara::show::EngineConfig& engine,
         const kirakara::show::RenderStyle& style,
         std::uint64_t content_revision,
         kirakara::show::win32::LyricRenderer& lyric_renderer,
         kirakara::show::win32::SongTitleRenderer* title_renderer,
-        const HostHudLayers* hud) {
-    return impl_ && impl_->render(document, title, current_time,
+        const HostHudLayers* hud,
+        std::optional<kirakara::show::Seconds> lyric_time) {
+    return impl_ && impl_->render(document, title, program_time,
+        lyric_time.value_or(program_time),
         engine, style, content_revision, lyric_renderer, title_renderer, hud);
 }
 

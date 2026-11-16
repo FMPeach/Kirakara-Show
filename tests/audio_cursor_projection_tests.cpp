@@ -1,6 +1,7 @@
 #include "../apps/show_host/audio/audio_cursor_projection.h"
 #include "../apps/show_host/cast/cast_program_clock.h"
 #include "../apps/show_host/media/program_picture.h"
+#include "../apps/show_host/stage/native_stage_lyric_presentation.h"
 #include "../apps/show_host/stage/native_stage_program_clock.h"
 
 #include <cstdlib>
@@ -187,44 +188,178 @@ void test_picture_only() {
         "new program inherited the previous picture time");
 }
 
-struct TestFrame {
-    double pts;
-    double duration;
+void test_native_stage_lyric_continuity() {
+    NativeStageLyricPresentation lyrics;
+    const auto read = [&](double wall, AudioPositionSample sample,
+            double raw, std::uint64_t revision = 1, double duration = 20.0) {
+        const auto time = lyrics.sample(sample, wall, duration, 0.0,
+            raw, revision, true);
+        expect(time.has_value(), "steady stage did not supply a lyric sample");
+        expect_near(time->program_seconds, raw, "lyric sample changed program time");
+        return *time;
+    };
+    lyrics.commit(read(0.00, {0.980, 1}, 0.980));
+    lyrics.commit(read(0.01, {0.990, 1}, 0.990));
+    const auto ahead = read(0.03, {1.000, 1}, 1.000);
+    expect_near(ahead.lyric_seconds, 1.010, "test did not project ahead");
+    lyrics.commit(ahead);
+
+    const auto stale = read(0.0467, {0.990, 1, true}, 1.000);
+    expect_near(stale.lyric_seconds, 1.010,
+        "stale cursor rewound already-presented ink");
+    lyrics.commit(stale);
+    const auto unavailable = read(0.20, {1.000, 0, true}, 1.000);
+    expect_near(unavailable.lyric_seconds, 1.010,
+        "missing reliable observations continued or rewound the lyrics");
+    lyrics.commit(unavailable);
+    expect_near(read(0.22, {1.030, 2}, 1.030).lyric_seconds, 1.030,
+        "fresh cursor did not catch up to the presented floor");
+
+    expect(!lyrics.sample({1.000, 0}, 0.24, 20.0, 0.0, 1.000, 1, false),
+        "pause or actual buffering should defer to raw time");
+    expect_near(read(0.26, {1.000, 3}, 1.000).lyric_seconds, 1.000,
+        "a paused run kept the old presented floor");
+    expect_near(read(0.28, {0.000, 4}, 0.000, 2).lyric_seconds, 0.000,
+        "replay inherited the old presentation");
+
+    lyrics.reset();
+    lyrics.commit(read(0.00, {0.980, 1}, 0.980));
+    lyrics.commit(read(0.01, {0.990, 1}, 0.990));
+    const auto dropped = read(0.03, {1.000, 1}, 1.000);
+    expect_near(dropped.lyric_seconds, 1.010, "no projected frame to drop");
+    // Do not commit the sampled frame, e.g. because the Stage pool was full.
+    expect_near(read(0.047, {1.000, 0, true}, 1.000).lyric_seconds, 1.000,
+        "unpresented frame advanced the visible floor");
+}
+
+void test_lyrics_over_held_video_tail() {
+    NativeStageProgramClock stage;
+    stage.reset(0.95, 0.0);
+    NativeStageProgramClockInput input;
+    input.has_audio_clock = input.has_audio_stream = input.has_video
+        = input.playback_requested = input.end_on_audio_eof = true;
+    input.audio_duration_seconds = 20.0;
+    input.audio_position_seconds = 0.95;
+    input.video_buffer = {1, 0.930, 0.960, 0.960,
+        MfD3D11VideoAvailability::end_of_stream};
+    expect(stage.update(input).request_audio_play, "tail test never started");
+
+    NativeStageLyricPresentation lyrics;
+    auto tick = [&](double wall, double raw) {
+        input.monotonic_seconds = wall;
+        input.audio_position_seconds = raw;
+        const auto update = stage.update(input);
+        expect(update.state == NativeStageProgramClockState::playing
+                && !update.request_audio_pause,
+            "short video ended the running audio program");
+        const auto time = lyrics.sample({raw, 1}, wall, 20.0, 0.0,
+            update.position_seconds, 1, true);
+        expect(time.has_value(), "retained video frame disallowed lyric sampling");
+        lyrics.commit(*time);
+        return time->lyric_seconds;
+    };
+    tick(0.00, 0.980);
+    tick(0.01, 0.990);
+    expect_near(tick(0.03, 1.000), 1.010,
+        "lyrics lost smooth time beyond the last video frame");
+}
+
+struct TestVideoFrame {
+    double pts{};
+    double duration{};
+    std::uint64_t revision{1};
     [[nodiscard]] double timestamp_seconds() const { return pts; }
     [[nodiscard]] double duration_seconds() const { return duration; }
+    [[nodiscard]] std::uint64_t generation() const { return revision; }
 };
 
-void test_picture_selection() {
-    TestFrame previous{0.984, 0.016};
-    TestFrame next{1.010, 0.016};
+void test_cast_frame_selection() {
     constexpr double tolerance = 1.0 / 240.0;
-    const auto available = [&](double time) {
-        return time + tolerance >= next.pts ? &next : &previous;
+    const TestVideoFrame before{0.989, 0.016};
+    const TestVideoFrame after{1.007, 0.004};
+    const TestVideoFrame next{1.030, 0.016};
+    const auto lookup = [&](double time) -> const TestVideoFrame* {
+        if (time + tolerance >= next.pts) return &next;
+        if (time + tolerance >= after.pts) return &after;
+        return &before;
     };
-    const auto ready = select_program_picture(
-        0.999, 0.999, 1.012, false, tolerance, available);
-    expect(ready.frame == &next && ready.raw_fallback == &previous,
-        "covered projection did not keep the original frame for fallback");
-    expect_near(ready.time_seconds, 1.012, "picture did not use the selected time");
+    const auto tick = [&](double raw, std::optional<double> projected,
+            const TestVideoFrame* last) {
+        return select_program_picture(raw, raw, projected, false,
+            tolerance, last, lookup);
+    };
+    const auto advanced = tick(1.000, 1.010, &before);
+    expect(advanced.frame == &after && advanced.fallback == &before,
+        "covered Cast projection did not select the next frame");
+    const auto outside = tick(1.000, 1.016667, advanced.frame);
+    expect(outside.frame == &after && !outside.fallback,
+        "uncovered projection rolled back a previously submitted Cast frame");
+    PresentedLyricTime lyrics;
+    lyrics.commit(1.010);
+    const auto next_lyric_time = 1.000 + max_offset_seconds;
+    expect_near(lyrics.keep(next_lyric_time, 1.000), next_lyric_time,
+        "retaining a Cast video frame stopped the lyric wipe");
+    lyrics.commit(next_lyric_time);
+    expect_near(lyrics.keep(1.000, 1.000), next_lyric_time,
+        "falling back to a stale audio sample rewound the Cast lyric wipe");
+    lyrics.reset();
+    expect_near(lyrics.keep(1.000, 1.000), 1.000,
+        "a Cast pause or discontinuity must discard the lyric floor");
+    expect(tick(1.000, 1.000, &after).frame == &after,
+        "unreliable audio sample undid an already-aired Cast frame");
+    const auto delayed = tick(1.030, 1.014, &before);
+    expect(delayed.frame == &after && delayed.fallback == &next,
+        "lagging projection cannot step over a valid not-yet-presented frame");
+    expect(tick(1.030, 1.014, &next).frame == &next,
+        "lagging projection accepted a frame older than the last submission");
+    expect(tick(1.000, std::nullopt, &after).frame == &before,
+        "a real transport transition inherited the presentation floor");
+    const TestVideoFrame prior_program{1.007, 0.004, 2};
+    expect(tick(1.000, 1.000, &prior_program).frame == &before,
+        "previous program's frame survived a timeline change");
 
-    const auto gap = select_program_picture(0.999, 0.999, 1.012, false,
-        tolerance, [&](double) { return &previous; });
-    expect(gap.frame == &previous && gap.raw_fallback == nullptr,
-        "uncovered projection hid the valid raw frame");
-    expect_near(gap.time_seconds, 0.999, "projection advanced through an uncovered gap");
-
-    int lookups{};
-    const auto miss = select_program_picture(0.999, 0.999, 1.012, false,
-        tolerance, [&](double time) -> TestFrame* {
-            ++lookups;
-            return time < 1.0 ? nullptr : &next;
+    unsigned calls{};
+    const auto missing = select_program_picture(1.000, 1.000, 1.010, false,
+        tolerance, &after, [&](double time) -> const TestVideoFrame* {
+            ++calls;
+            return time > 1.000 ? &after : nullptr;
         });
-    expect(miss.frame == nullptr && lookups == 1,
-        "projection covered up a missing raw picture");
-    const auto tail = select_program_picture(
-        1.5, 1.0, 1.512, true, tolerance, available);
-    expect(tail.frame == &previous, "projection interfered with a held video tail");
-    expect_near(tail.time_seconds, 1.5, "held video tail changed its raw time");
+    expect(!missing.frame && calls == 1,
+        "projection or history hid a genuine missing raw frame");
+}
+
+void test_cast_audio_master_cadence() {
+    constexpr double interval = 1.0 / 60.0;
+    constexpr double tolerance = 1.0 / 240.0;
+    std::vector<TestVideoFrame> frames;
+    for (int i = 0; i < 310; ++i) frames.push_back({i * interval, interval});
+    const auto lookup = [&](double time) -> const TestVideoFrame* {
+        const auto index = static_cast<std::size_t>(
+            std::floor((time + tolerance) / interval));
+        return &frames.at(index);
+    };
+    AudioCursorProjection projection;
+    const TestVideoFrame* last{};
+    const TestVideoFrame* previous_raw{};
+    unsigned raw_repeats{};
+    for (int i = 0; i <= 300; ++i) {
+        const auto now = i * interval;
+        const auto raw = std::floor(now * 100.0 + 1e-9) * 0.010;
+        const auto candidate = audio_picture_time(
+            projection, {raw, 1}, now, 20.0, 0.0, raw, 1, true);
+        const auto picture =
+            select_program_picture(raw, raw, candidate, false, tolerance, last, lookup);
+        expect(picture.frame != nullptr, "steady simulated Cast lost its picture");
+        const auto* raw_frame = lookup(raw);
+        if (i > 3) {
+            if (raw_frame == previous_raw) ++raw_repeats;
+            expect(picture.frame == last + 1,
+                "quantized audio moved the selected 60 fps picture irregularly");
+        }
+        last = picture.frame;  // Simulated successful encoder submission.
+        previous_raw = raw_frame;
+    }
+    expect(raw_repeats > 30, "cadence test did not exercise raw repeat/skip");
 }
 
 void test_buffer_gates() {
@@ -404,7 +539,10 @@ int main(int argc, char** argv) {
     test_cache_and_stall();
     test_transport_boundaries();
     test_picture_only();
-    test_picture_selection();
+    test_native_stage_lyric_continuity();
+    test_lyrics_over_held_video_tail();
+    test_cast_frame_selection();
+    test_cast_audio_master_cadence();
     test_buffer_gates();
     std::cout << "PASS: bounded audio cursor projection\n";
 }

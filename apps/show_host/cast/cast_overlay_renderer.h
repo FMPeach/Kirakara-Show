@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <array>
 #include <memory>
+#include <optional>
 
 struct HostHudLayers;
 
@@ -66,13 +67,14 @@ public:
     [[nodiscard]] bool render(
         const kirakara::show::PreparedDocument& document,
         const kirakara::show::SongTitleConfig& title,
-        kirakara::show::Seconds current_time,
+        kirakara::show::Seconds program_time,
         const kirakara::show::EngineConfig& engine,
         const kirakara::show::RenderStyle& style,
         std::uint64_t content_revision,
         kirakara::show::win32::LyricRenderer& lyric_renderer,
         kirakara::show::win32::SongTitleRenderer* title_renderer = nullptr,
-        const HostHudLayers* hud = nullptr);
+        const HostHudLayers* hud = nullptr,
+        std::optional<kirakara::show::Seconds> lyric_time = std::nullopt);
 
     [[nodiscard]] const CastOverlayFrame& frame() const noexcept;
 

@@ -173,7 +173,13 @@ bool DirectSoundPcmAudioBackend::set_key_semitones(int semitones)
     }
 
 double DirectSoundPcmAudioBackend::position() const
-{ return position_sample().seconds; }
+{
+        std::unique_lock lock(mutex_, std::try_to_lock);
+        if (!lock.owns_lock()) {
+            return cached_position_.load(std::memory_order_relaxed);
+        }
+        return position_locked().seconds;
+    }
 
 AudioPositionSample DirectSoundPcmAudioBackend::position_sample() const
 {
@@ -188,6 +194,11 @@ AudioPositionSample DirectSoundPcmAudioBackend::position_sample() const
                 running_cursor_epoch_.load(std::memory_order_acquire);
             return {seconds, before == after ? after : 0, true};
         }
+        return position_locked();
+    }
+
+AudioPositionSample DirectSoundPcmAudioBackend::position_locked() const
+{
         if (!opened_) return {};
         bool device_cursor_valid{};
         const auto frame = current_play_frame_locked(&device_cursor_valid);

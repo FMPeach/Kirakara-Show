@@ -1,10 +1,10 @@
 #pragma once
 
 #include "../show_host_api.h"
-#include "../audio/audio_cursor_projection.h"
 #include "../media/mf_d3d11_video_decoder.h"
 #include "../media/idle_background.h"
 #include "native_stage_frame_scheduler.h"
+#include "native_stage_lyric_presentation.h"
 #include "native_stage_pipeline_diagnostics.h"
 #include "native_stage_preview_load_policy.h"
 #include "native_stage_program_clock.h"
@@ -97,7 +97,7 @@ struct NativeStageSession {
     MfD3D11VideoDecoder stage_video_decoder;
     bool stage_video_decoder_started{};
     NativeStageProgramClock program_clock;
-    AudioCursorProjection picture_cursor;
+    NativeStageLyricPresentation lyric_presentation;
     bool program_clock_active{};
     // Bounded next-program slot. A paused directive asks MF for only the first
     // frame at t=0, then sleeps until atomically promoted. Keep normal active
@@ -136,12 +136,6 @@ struct NativeStageSession {
     std::uint64_t decoded_frame_id{};
 };
 
-struct NativeStagePictureTime {
-    double raw_seconds{};
-    double picture_seconds{};
-    std::uint64_t timeline_revision{};
-};
-
 bool publish_stage_texture_frame(
     StageTextureSourceState& source,
     const kirakara::show::StageFrame& frame,
@@ -174,7 +168,7 @@ void discontinuity_native_stage_program_clock(
     ShowHost& host, double position_seconds);
 void pause_native_stage_program_clock(
     ShowHost& host, double position_seconds);
-std::optional<NativeStagePictureTime> service_native_stage_program(ShowHost& host);
+std::optional<NativeStageLyricSample> service_native_stage_program(ShowHost& host);
 
 bool prime_native_stage_video(ShowHost& host, double position);
 void request_native_stage_standby_video(
@@ -200,7 +194,7 @@ bool publish_unified_native_stage_frame(
     std::uint32_t video_height,
     kirakara::show::win32::UnifiedStageVideoFrameIdentity video_identity,
     double stage_time,
-    double picture_time,
+    std::optional<double> lyric_time,
     std::uint64_t generation,
     bool draw_program_overlays,
     bool flush_d3d_before_publish);
@@ -211,4 +205,4 @@ void mark_current_native_video_program_ready(
 void clear_current_native_video_program(ShowHost& host);
 
 void render_unified_native_stage(ShowHost& host,
-    const std::optional<NativeStagePictureTime>& projected = std::nullopt);
+    const std::optional<NativeStageLyricSample>& sampled_lyrics = std::nullopt);

@@ -6,8 +6,30 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <optional>
 
 inline constexpr double kMaxAudioPictureOffsetSeconds = 1.0 / 60.0;
+
+// Retain the last visible lyric position through a temporarily unreliable
+// cursor read. Each output resets this at real transport discontinuities and
+// commits only after its frame was accepted.
+class PresentedLyricTime {
+public:
+    void reset() noexcept { last_.reset(); }
+
+    [[nodiscard]] double keep(double lyric_seconds, double program_seconds) const noexcept {
+        if (last_ && *last_ <= program_seconds
+                + kMaxAudioPictureOffsetSeconds + 1e-9) {
+            return std::max(lyric_seconds, *last_);
+        }
+        return lyric_seconds;
+    }
+
+    void commit(double lyric_seconds) noexcept { last_ = lyric_seconds; }
+
+private:
+    std::optional<double> last_;
+};
 
 struct AudioCursorReading {
     double wall_seconds{};

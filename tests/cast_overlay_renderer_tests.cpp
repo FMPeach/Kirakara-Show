@@ -129,16 +129,16 @@ std::size_t first_visible_pixel(std::span<const std::uint8_t> bgra) {
     return bgra.size() / 4;
 }
 
-PreparedDocument make_document(const EngineConfig& engine) {
+PreparedDocument make_document(const EngineConfig& engine, Seconds start = 1.0) {
     LyricChar character;
     character.text = "A";
-    character.start_time = 1.0;
-    character.end_time = 2.0;
+    character.start_time = start;
+    character.end_time = start + 1.0;
     character.ruby_span = 1;
     LyricLine line;
     line.chars.push_back(std::move(character));
-    line.start_time = 1.0;
-    line.end_time = 2.0;
+    line.start_time = start;
+    line.end_time = start + 1.0;
     const std::vector<LyricLine> lines{std::move(line)};
     return prepare_timeline(lines, engine);
 }
@@ -322,6 +322,22 @@ int main() {
             && diagnostics.snapshot().event(
                 CastPipelineEvent::overlay_draw).count == title_draws,
         "unchanged title must not redraw or flush caches every frame");
+
+    const auto title_boundary_lyrics = make_document(engine, 2.5);
+    expect(overlay.render(title_boundary_lyrics, next_title, 2.990,
+        engine, style, 4, lyric_renderer, &title_renderer, nullptr, 2.990)
+        && overlay.frame().title_drawn && overlay.frame().lyrics_drawn,
+        "title and lyrics before the title boundary");
+    const auto before_lyric_tick = overlay.frame().content_version;
+    expect(overlay.render(title_boundary_lyrics, next_title, 2.990,
+        engine, style, 4, lyric_renderer, &title_renderer, nullptr, 3.006)
+        && overlay.frame().content_version == before_lyric_tick + 1
+        && overlay.frame().title_drawn && overlay.frame().lyrics_drawn,
+        "lyrics advance over the same program time without ending the title");
+    expect(overlay.render(title_boundary_lyrics, next_title, 3.010,
+        engine, style, 4, lyric_renderer, &title_renderer, nullptr, 3.006)
+        && !overlay.frame().title_drawn && overlay.frame().lyrics_drawn,
+        "title ends at program time independently of the lyric estimate");
 
     {
         kirakara::show::win32::D3D11TextureSurface card;

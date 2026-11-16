@@ -90,9 +90,13 @@ private:
 
     void retarget_buffer_after_track_switch_locked(std::uint64_t play_frame);
 
-    std::uint64_t current_play_frame_locked(bool* device_cursor_valid = nullptr) const;
+    std::uint64_t current_play_frame_locked(
+        bool* device_cursor_valid = nullptr) const;
 
-    std::uint64_t cache_position_locked(double seconds, bool device_cursor_valid) const;
+    AudioPositionSample position_locked() const;
+
+    std::uint64_t cache_position_locked(
+        double seconds, bool device_cursor_valid) const;
 
     void invalidate_cursor_locked() const noexcept;
 

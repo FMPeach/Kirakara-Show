@@ -34,6 +34,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -90,6 +91,7 @@ struct CastSession {
     std::shared_ptr<const CastNormalizedVideoFrame> last_overlay_base;
     std::shared_ptr<const CastProgramSnapshot> last_overlay_program;
     double last_overlay_time{};
+    std::optional<double> last_overlay_lyric_time;
     bool last_overlay_draw_program{};
     std::atomic<std::shared_ptr<const IdleBackgroundSource>> idle_background_source;
     MfD3D11VideoDecoder video_decoder;
@@ -108,7 +110,12 @@ struct CastSession {
     std::uint64_t frame_index{};
     std::chrono::steady_clock::time_point next_frame_due{};
     CastProgramClock program_clock;
+    // Worker-owned. Retain only the most recent accepted source frame so a
+    // stale cursor cannot undo a picture that already went on air.
     AudioCursorProjection picture_cursor;
+    std::shared_ptr<const DecodedD3D11VideoFrame> last_submitted_picture;
+    PresentedLyricTime presented_lyric_time;
+    std::uint64_t picture_timeline_revision{};
     CastPipelineDiagnostics pipeline_diagnostics;
     std::mutex capability_mutex;
     D3D11CastCapabilityReport capability_report;

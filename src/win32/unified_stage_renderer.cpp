@@ -335,7 +335,8 @@ struct UnifiedStageRenderer::Impl {
                 ? &request.diagnostics->lyric_render_qpc : nullptr);
             renderers->lyrics.set_font_families(request.config->font_families);
             if (!renderers->lyrics.render_overlay(*request.lyrics,
-                        request.project_time, request.config->engine,
+                        request.lyric_project_time.value_or(request.project_time),
+                        request.config->engine,
                         request.config->style)) {
                 return UnifiedStageRenderResult::render_failed;
             }

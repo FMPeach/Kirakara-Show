@@ -294,8 +294,9 @@ void validate_video_base_cache() {
     // The output must keep the captured base while dynamic lyrics advance.
     fill_source(Color{1.0F, 0.0F, 0.0F, 1.0F});
     request.timing.frame_id = 1;
-    request.timing.pts_100ns = 26'000'000;
-    request.project_time = 2.6;
+    // Deliberately exaggerate the override to verify the draw uses it, even
+    // though the host bounds the real adjustment to one presentation frame.
+    request.lyric_project_time = 2.6;
     diagnostics = {};
     expect(renderer.render(request) == UnifiedStageRenderResult::published,
         "publish repeated decoded identity");
@@ -306,6 +307,8 @@ void validate_video_base_cache() {
         "cached video reuse only flushes the final Stage target");
     frame = mailbox.take_latest();
     expect(static_cast<bool>(frame), "receive reused video frame");
+    expect(frame->timing.pts_100ns == 11'000'000,
+        "lyric-only sample must not change published frame time");
     auto reused_pixels = read_bgra(
         frame->native_resource, output_width, output_height);
     expect(is_green(reused_pixels.data() + center_index),
@@ -314,6 +317,9 @@ void validate_video_base_cache() {
         "dynamic lyric overlay advances over cached video base");
     frame = {};
 
+    request.lyric_project_time.reset();
+    request.project_time = 2.6;
+    request.timing.pts_100ns = 26'000'000;
     request.timing.frame_id = 2;
     request.video_identity.frame_id = 8;
     diagnostics = {};
@@ -389,6 +395,7 @@ void validate_title_cache_generation() {
         .project_time = 1.0,
         .config = &config,
         .draw_lyrics = false,
+        .lyric_project_time = config.song_title.duration + 1.0,
     };
     expect(renderer.render(request) == UnifiedStageRenderResult::published,
         "publish first song title placement");

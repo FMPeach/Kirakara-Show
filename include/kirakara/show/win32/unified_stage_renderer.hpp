@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 
 namespace kirakara::show::win32 {
 
@@ -63,6 +64,9 @@ struct UnifiedStageRenderRequest {
     // handle so ANGLE cannot observe a partially recorded frame.
     bool flush_d3d_before_publish{};
     UnifiedStageRenderTimings* diagnostics{};
+    // A presentation sample for lyrics only. Titles and frame metadata
+    // retain the caller's program time.
+    std::optional<Seconds> lyric_project_time{};
 };
 
 enum class UnifiedStageRenderResult {

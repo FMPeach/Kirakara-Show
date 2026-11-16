@@ -628,7 +628,7 @@ bool activate_native_stage_program_clock(
     host.output_transition.native_stage_video_source_active.store(
         true, std::memory_order_release);
     host.native_stage.program_clock_active = true;
-    host.native_stage.picture_cursor.reset();
+    host.native_stage.lyric_presentation.reset();
     host.native_stage.program_clock.discontinuity(
         position_seconds, native_stage_monotonic_seconds());
     return true;
@@ -637,7 +637,7 @@ bool activate_native_stage_program_clock(
 void deactivate_native_stage_program_clock(
         ShowHost& host, double position_seconds) {
     host.native_stage.program_clock_active = false;
-    host.native_stage.picture_cursor.reset();
+    host.native_stage.lyric_presentation.reset();
     host.output_transition.native_stage_video_source_active.store(
         false, std::memory_order_release);
     host.native_stage.program_clock.reset(
@@ -647,6 +647,7 @@ void deactivate_native_stage_program_clock(
 void discontinuity_native_stage_program_clock(
         ShowHost& host, double position_seconds) {
     if (!host.native_stage.program_clock_active) return;
+    host.native_stage.lyric_presentation.reset();
     host.native_stage.program_clock.discontinuity(
         position_seconds, native_stage_monotonic_seconds());
 }
@@ -654,11 +655,12 @@ void discontinuity_native_stage_program_clock(
 void pause_native_stage_program_clock(
         ShowHost& host, double position_seconds) {
     if (!host.native_stage.program_clock_active) return;
+    host.native_stage.lyric_presentation.reset();
     host.native_stage.program_clock.pause_at(
         position_seconds, native_stage_monotonic_seconds());
 }
 
-std::optional<NativeStagePictureTime> service_native_stage_program(ShowHost& host) {
+std::optional<NativeStageLyricSample> service_native_stage_program(ShowHost& host) {
     if (has_ts_stage_output(host)) return std::nullopt;
 
     if (!host.native_stage.program_clock_active) {
@@ -695,7 +697,7 @@ std::optional<NativeStagePictureTime> service_native_stage_program(ShowHost& hos
     }
     if (!host.native_stage.stage_video_decoder_started
             && !configure_unified_native_stage(host)) {
-        host.native_stage.picture_cursor.reset();
+        host.native_stage.lyric_presentation.reset();
         return std::nullopt;
     }
 
@@ -737,7 +739,11 @@ std::optional<NativeStagePictureTime> service_native_stage_program(ShowHost& hos
     input.has_video = true;
     input.has_audio_stream = true;
     input.has_audio_clock = !host.playback.video_master_clock;
-    const auto audio_sample = host.playback.audio->position_sample();
+    const bool smooth_lyrics = input.has_audio_clock
+        && !host.playback.document.lines.empty();
+    const auto audio_sample = smooth_lyrics
+        ? host.playback.audio->position_sample()
+        : AudioPositionSample{host.playback.audio->position()};
     input.audio_position_seconds = std::max(0.0,
         audio_sample.seconds
             + host.playback.audio_processing.clock_offset_seconds);
@@ -784,7 +790,7 @@ std::optional<NativeStagePictureTime> service_native_stage_program(ShowHost& hos
 
     if (update.state == NativeStageProgramClockState::ended
             && state == SHOW_STATE_PLAYING) {
-        host.native_stage.picture_cursor.reset();
+        host.native_stage.lyric_presentation.reset();
         handle_media_ended(host);
         return std::nullopt;
     }
@@ -801,7 +807,7 @@ std::optional<NativeStagePictureTime> service_native_stage_program(ShowHost& hos
         host.playback.has_paused_position = false;
         bump_playback_revision(host);
     }
-    const bool steady_playback = input.has_audio_clock && playing
+    const bool steady_playback = smooth_lyrics && playing
         && previous_clock_state == NativeStageProgramClockState::playing
         && update.state == NativeStageProgramClockState::playing
         && !update.request_audio_pause && !update.request_audio_seek
@@ -809,13 +815,11 @@ std::optional<NativeStagePictureTime> service_native_stage_program(ShowHost& hos
         && !host.native_stage.native_video_start_pending
         && !host.output_transition.native_transition_holding
         && has_current_native_video_program(host);
-    const auto picture_time = audio_picture_time(
-        host.native_stage.picture_cursor, audio_sample, input.monotonic_seconds,
+    return host.native_stage.lyric_presentation.sample(
+        audio_sample, input.monotonic_seconds,
         input.audio_duration_seconds,
         host.playback.audio_processing.clock_offset_seconds,
         update.position_seconds, generation, steady_playback);
-    if (picture_time == update.position_seconds) return std::nullopt;
-    return NativeStagePictureTime{update.position_seconds, picture_time, generation};
 }
 
 bool prime_native_stage_video(ShowHost& host, double position) {
@@ -1079,7 +1083,7 @@ bool publish_unified_native_stage_frame(
         std::uint32_t video_height,
         kirakara::show::win32::UnifiedStageVideoFrameIdentity video_identity,
         double stage_time,
-        double picture_time,
+        std::optional<double> lyric_time,
         std::uint64_t generation,
         bool draw_program_overlays,
         bool flush_d3d_before_publish) {
@@ -1127,7 +1131,7 @@ bool publish_unified_native_stage_frame(
                     std::max(0.0, stage_time) * 10000000.0),
                 frame_duration_100ns,
             },
-            .project_time = picture_time,
+            .project_time = stage_time,
             .video_texture = render_texture,
             .video_width = render_width,
             .video_height = render_height,
@@ -1142,6 +1146,7 @@ bool publish_unified_native_stage_frame(
             .flush_d3d_before_publish = flush_d3d_before_publish,
             .diagnostics = host.native_stage.pipeline_diagnostics.enabled()
                 ? &render_timings : nullptr,
+            .lyric_project_time = lyric_time,
         });
     record_stage_render_timings(
         host.native_stage.pipeline_diagnostics, render_timings);
@@ -1179,7 +1184,7 @@ bool publish_unified_native_stage_frame(
 }
 
 void render_unified_native_stage(ShowHost& host,
-        const std::optional<NativeStagePictureTime>& projected) {
+        const std::optional<NativeStageLyricSample>& sampled_lyrics) {
     const bool output_visible = has_physical_stage_output(host)
         || has_active_stage_texture_source(host);
     if (!output_visible || has_ts_stage_output(host)
@@ -1261,12 +1266,6 @@ void render_unified_native_stage(ShowHost& host,
         ? std::min(stage_time, decoder_buffer.buffered_end_seconds)
         : stage_time;
 
-    double picture_time = stage_time;
-    const auto candidate_time = projected && playing && !buffering
-            && !host.native_stage.native_video_start_pending
-            && projected->timeline_revision == generation
-            && projected->raw_seconds == stage_time
-        ? projected->picture_seconds : stage_time;
     std::shared_ptr<const DecodedD3D11VideoFrame> decoded;
     if (decoder_state != MfD3D11PlaybackState::idle) {
         host.native_stage.pipeline_diagnostics.increment(
@@ -1275,16 +1274,17 @@ void render_unified_native_stage(ShowHost& host,
             NativeStagePipelineDurationScope decoder_timing(
                 host.native_stage.pipeline_diagnostics,
                 NativeStagePipelineEvent::decoder_request);
-            auto picture = host.native_stage.stage_video_decoder.picture_for(
+            decoded = host.native_stage.stage_video_decoder.texture_for(
                 host.playback.current_media.video,
                 generation,
-                stage_time, video_sample_time, candidate_time,
-                hold_video_tail_for_audio);
-            decoded = std::move(picture.frame);
-            picture_time = picture.time_seconds;
-            if (candidate_time != stage_time && picture_time == stage_time) {
-                host.native_stage.picture_cursor.reset();
-            }
+                video_sample_time);
+        }
+        if (decoded && !hold_video_tail_for_audio
+                && !video_frame_matches_program_time(
+                decoded->timestamp_seconds(),
+                decoded->duration_seconds(),
+                stage_time)) {
+            decoded.reset();
         }
         if (decoded) {
             host.native_stage.pipeline_diagnostics.increment(
@@ -1349,6 +1349,12 @@ void render_unified_native_stage(ShowHost& host,
     const auto profile = host.native_stage.unified_stage_renderer.profile();
     const bool clock_advancing = playing && !buffering
         && !host.native_stage.native_video_start_pending;
+    // Frame lookup and all readiness checks above use program time, including
+    // a legitimate repeated final video frame while audio keeps advancing.
+    const auto* lyric_sample = decoded && sampled_lyrics && clock_advancing
+            && sampled_lyrics->timeline_revision == generation
+            && sampled_lyrics->program_seconds == stage_time
+        ? &*sampled_lyrics : nullptr;
     const bool waiting_for_static_video = has_video && !decoded
         && decoder_state != MfD3D11PlaybackState::idle;
     const NativeStageContentIdentity content_identity{
@@ -1399,7 +1405,8 @@ void render_unified_native_stage(ShowHost& host,
                     .height = decoded->height(),
                 },
                 stage_time,
-                picture_time,
+                lyric_sample ? std::optional{lyric_sample->lyric_seconds}
+                    : std::nullopt,
                 generation,
                 true,
                 flush_d3d_before_publish)) {
@@ -1414,7 +1421,7 @@ void render_unified_native_stage(ShowHost& host,
                 0,
                 {},
                 stage_time,
-                picture_time,
+                std::nullopt,
                 generation,
                 false,
                 flush_d3d_before_publish)) {
@@ -1424,6 +1431,9 @@ void render_unified_native_stage(ShowHost& host,
 
     if (native_window_output) {
         const auto finish_present = [&] {
+            if (lyric_sample) {
+                host.native_stage.lyric_presentation.commit(*lyric_sample);
+            }
             host.native_stage.native_stage_presented_frames.fetch_add(
                 1, std::memory_order_relaxed);
             notify_stage_texture_sources(host, true);
@@ -1486,6 +1496,9 @@ void render_unified_native_stage(ShowHost& host,
             host.native_stage.unified_stage_presenter.shutdown();
         }
         return;
+    }
+    if (lyric_sample) {
+        host.native_stage.lyric_presentation.commit(*lyric_sample);
     }
     notify_stage_texture_sources(host, false);
     host.native_stage.frame_scheduler.commit(content_identity);
