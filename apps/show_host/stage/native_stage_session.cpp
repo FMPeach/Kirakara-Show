@@ -628,6 +628,7 @@ bool activate_native_stage_program_clock(
     host.output_transition.native_stage_video_source_active.store(
         true, std::memory_order_release);
     host.native_stage.program_clock_active = true;
+    host.native_stage.picture_cursor.reset();
     host.native_stage.program_clock.discontinuity(
         position_seconds, native_stage_monotonic_seconds());
     return true;
@@ -636,6 +637,7 @@ bool activate_native_stage_program_clock(
 void deactivate_native_stage_program_clock(
         ShowHost& host, double position_seconds) {
     host.native_stage.program_clock_active = false;
+    host.native_stage.picture_cursor.reset();
     host.output_transition.native_stage_video_source_active.store(
         false, std::memory_order_release);
     host.native_stage.program_clock.reset(
@@ -656,8 +658,8 @@ void pause_native_stage_program_clock(
         position_seconds, native_stage_monotonic_seconds());
 }
 
-void service_native_stage_program(ShowHost& host) {
-    if (has_ts_stage_output(host)) return;
+std::optional<NativeStagePictureTime> service_native_stage_program(ShowHost& host) {
+    if (has_ts_stage_output(host)) return std::nullopt;
 
     if (!host.native_stage.program_clock_active) {
         auto activation_position = host.playback.position.load(
@@ -670,7 +672,7 @@ void service_native_stage_program(ShowHost& host) {
         }
         if (!activate_native_stage_program_clock(
                 host, activation_position)) {
-            return;
+            return std::nullopt;
         }
         if (host.playback.state.load() == SHOW_STATE_PLAYING) {
             static_cast<void>(host.playback.audio->pause());
@@ -689,11 +691,12 @@ void service_native_stage_program(ShowHost& host) {
             || !host.playback.audio->is_open()) {
         deactivate_native_stage_program_clock(
             host, host.playback.position.load(std::memory_order_relaxed));
-        return;
+        return std::nullopt;
     }
     if (!host.native_stage.stage_video_decoder_started
             && !configure_unified_native_stage(host)) {
-        return;
+        host.native_stage.picture_cursor.reset();
+        return std::nullopt;
     }
 
     const auto state = host.playback.state.load();
@@ -734,8 +737,9 @@ void service_native_stage_program(ShowHost& host) {
     input.has_video = true;
     input.has_audio_stream = true;
     input.has_audio_clock = !host.playback.video_master_clock;
+    const auto audio_sample = host.playback.audio->position_sample();
     input.audio_position_seconds = std::max(0.0,
-        host.playback.audio->position()
+        audio_sample.seconds
             + host.playback.audio_processing.clock_offset_seconds);
     input.end_on_audio_eof = input.has_audio_clock;
     input.audio_end_of_stream = host.playback.audio->has_ended();
@@ -780,8 +784,9 @@ void service_native_stage_program(ShowHost& host) {
 
     if (update.state == NativeStageProgramClockState::ended
             && state == SHOW_STATE_PLAYING) {
+        host.native_stage.picture_cursor.reset();
         handle_media_ended(host);
-        return;
+        return std::nullopt;
     }
     if (update.state == NativeStageProgramClockState::fatal_error
             && previous_clock_state
@@ -796,6 +801,21 @@ void service_native_stage_program(ShowHost& host) {
         host.playback.has_paused_position = false;
         bump_playback_revision(host);
     }
+    const bool steady_playback = input.has_audio_clock && playing
+        && previous_clock_state == NativeStageProgramClockState::playing
+        && update.state == NativeStageProgramClockState::playing
+        && !update.request_audio_pause && !update.request_audio_seek
+        && !update.request_audio_play
+        && !host.native_stage.native_video_start_pending
+        && !host.output_transition.native_transition_holding
+        && has_current_native_video_program(host);
+    const auto picture_time = audio_picture_time(
+        host.native_stage.picture_cursor, audio_sample, input.monotonic_seconds,
+        input.audio_duration_seconds,
+        host.playback.audio_processing.clock_offset_seconds,
+        update.position_seconds, generation, steady_playback);
+    if (picture_time == update.position_seconds) return std::nullopt;
+    return NativeStagePictureTime{update.position_seconds, picture_time, generation};
 }
 
 bool prime_native_stage_video(ShowHost& host, double position) {
@@ -1059,6 +1079,7 @@ bool publish_unified_native_stage_frame(
         std::uint32_t video_height,
         kirakara::show::win32::UnifiedStageVideoFrameIdentity video_identity,
         double stage_time,
+        double picture_time,
         std::uint64_t generation,
         bool draw_program_overlays,
         bool flush_d3d_before_publish) {
@@ -1106,7 +1127,7 @@ bool publish_unified_native_stage_frame(
                     std::max(0.0, stage_time) * 10000000.0),
                 frame_duration_100ns,
             },
-            .project_time = stage_time,
+            .project_time = picture_time,
             .video_texture = render_texture,
             .video_width = render_width,
             .video_height = render_height,
@@ -1157,7 +1178,8 @@ bool publish_unified_native_stage_frame(
     return true;
 }
 
-void render_unified_native_stage(ShowHost& host) {
+void render_unified_native_stage(ShowHost& host,
+        const std::optional<NativeStagePictureTime>& projected) {
     const bool output_visible = has_physical_stage_output(host)
         || has_active_stage_texture_source(host);
     if (!output_visible || has_ts_stage_output(host)
@@ -1239,6 +1261,12 @@ void render_unified_native_stage(ShowHost& host) {
         ? std::min(stage_time, decoder_buffer.buffered_end_seconds)
         : stage_time;
 
+    double picture_time = stage_time;
+    const auto candidate_time = projected && playing && !buffering
+            && !host.native_stage.native_video_start_pending
+            && projected->timeline_revision == generation
+            && projected->raw_seconds == stage_time
+        ? projected->picture_seconds : stage_time;
     std::shared_ptr<const DecodedD3D11VideoFrame> decoded;
     if (decoder_state != MfD3D11PlaybackState::idle) {
         host.native_stage.pipeline_diagnostics.increment(
@@ -1247,17 +1275,16 @@ void render_unified_native_stage(ShowHost& host) {
             NativeStagePipelineDurationScope decoder_timing(
                 host.native_stage.pipeline_diagnostics,
                 NativeStagePipelineEvent::decoder_request);
-            decoded = host.native_stage.stage_video_decoder.texture_for(
+            auto picture = host.native_stage.stage_video_decoder.picture_for(
                 host.playback.current_media.video,
                 generation,
-                video_sample_time);
-        }
-        if (decoded && !hold_video_tail_for_audio
-                && !video_frame_matches_program_time(
-                decoded->timestamp_seconds(),
-                decoded->duration_seconds(),
-                stage_time)) {
-            decoded.reset();
+                stage_time, video_sample_time, candidate_time,
+                hold_video_tail_for_audio);
+            decoded = std::move(picture.frame);
+            picture_time = picture.time_seconds;
+            if (candidate_time != stage_time && picture_time == stage_time) {
+                host.native_stage.picture_cursor.reset();
+            }
         }
         if (decoded) {
             host.native_stage.pipeline_diagnostics.increment(
@@ -1372,6 +1399,7 @@ void render_unified_native_stage(ShowHost& host) {
                     .height = decoded->height(),
                 },
                 stage_time,
+                picture_time,
                 generation,
                 true,
                 flush_d3d_before_publish)) {
@@ -1386,6 +1414,7 @@ void render_unified_native_stage(ShowHost& host) {
                 0,
                 {},
                 stage_time,
+                picture_time,
                 generation,
                 false,
                 flush_d3d_before_publish)) {

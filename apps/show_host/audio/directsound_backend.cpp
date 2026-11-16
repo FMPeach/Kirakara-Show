@@ -47,14 +47,11 @@ void DirectSoundPcmAudioBackend::set_active_track(int track)
 {
         std::lock_guard lock(mutex_);
         const auto play_frame = current_play_frame_locked();
-        auto* previous_pcm = active_pcm_;
-        if (track == SHOW_AUDIO_TRACK_ACCOMPANIMENT
-                && inst_pcm_.frame_count() > 0) {
-            active_pcm_ = &inst_pcm_;
-        } else {
-            active_pcm_ = &vocal_pcm_;
-        }
-        if (active_pcm_ == previous_pcm) return;
+        auto* next_pcm = track == SHOW_AUDIO_TRACK_ACCOMPANIMENT
+                && inst_pcm_.frame_count() > 0 ? &inst_pcm_ : &vocal_pcm_;
+        if (active_pcm_ == next_pcm) return;
+        invalidate_cursor_locked();
+        active_pcm_ = next_pcm;
         ++track_generation_;
         retarget_buffer_after_track_switch_locked(play_frame);
         ended_.store(
@@ -67,6 +64,7 @@ void DirectSoundPcmAudioBackend::close()
 {
         {
             std::lock_guard lock(mutex_);
+            invalidate_cursor_locked();
             stop_thread_ = true;
             playing_ = false;
         }
@@ -101,6 +99,7 @@ bool DirectSoundPcmAudioBackend::pause()
 {
         std::lock_guard lock(mutex_);
         if (!opened_) return false;
+        invalidate_cursor_locked();
         playing_ = false;
         if (buffer_) {
             static_cast<void>(buffer_->Stop());
@@ -174,23 +173,47 @@ bool DirectSoundPcmAudioBackend::set_key_semitones(int semitones)
     }
 
 double DirectSoundPcmAudioBackend::position() const
+{ return position_sample().seconds; }
+
+AudioPositionSample DirectSoundPcmAudioBackend::position_sample() const
 {
-        // Non-blocking by design. The audio worker holds mutex_ while running
-        // the pitch-shift DSP, so waiting here stalled the caller (the render
-        // loop polls this for A/V drift) for 5-27 ms, which showed up on
-        // screen as periodic judder. When the lock is busy, return the value
-        // from the last successful read instead: the worker refreshes it every
-        // few milliseconds, far finer than the 500 ms drift check that uses it.
+        // The worker holds mutex_ during pitch-shift DSP. Keep the render
+        // thread's existing nonblocking read and raw cache fallback.
         std::unique_lock lock(mutex_, std::try_to_lock);
         if (!lock.owns_lock()) {
-            return cached_position_.load(std::memory_order_relaxed);
+            const auto before =
+                running_cursor_epoch_.load(std::memory_order_acquire);
+            const auto seconds = cached_position_.load(std::memory_order_acquire);
+            const auto after =
+                running_cursor_epoch_.load(std::memory_order_acquire);
+            return {seconds, before == after ? after : 0, true};
         }
-        if (!opened_) return 0.0;
-        const auto frame = current_play_frame_locked();
+        if (!opened_) return {};
+        bool device_cursor_valid{};
+        const auto frame = current_play_frame_locked(&device_cursor_valid);
         const auto seconds = std::min(duration(),
             static_cast<double>(frame) / active_pcm_->sample_rate);
-        cached_position_.store(seconds, std::memory_order_relaxed);
-        return seconds;
+        return {seconds, cache_position_locked(seconds, device_cursor_valid)};
+    }
+
+void DirectSoundPcmAudioBackend::invalidate_cursor_locked() const noexcept
+{
+        running_cursor_epoch_.store(0, std::memory_order_release);
+    }
+
+std::uint64_t DirectSoundPcmAudioBackend::cache_position_locked(
+        double seconds, bool device_cursor_valid) const
+{
+        const bool valid = device_cursor_valid && playing_ && buffer_playing_
+            && !ended_.load(std::memory_order_relaxed);
+        if (!valid) invalidate_cursor_locked();
+        cached_position_.store(seconds, std::memory_order_release);
+        auto epoch = running_cursor_epoch_.load(std::memory_order_relaxed);
+        if (valid && epoch == 0) {
+            epoch = ++next_cursor_epoch_;
+            running_cursor_epoch_.store(epoch, std::memory_order_release);
+        }
+        return epoch;
     }
 
 double DirectSoundPcmAudioBackend::duration() const
@@ -299,6 +322,7 @@ void DirectSoundPcmAudioBackend::clear_directsound_buffer()
 
 void DirectSoundPcmAudioBackend::reset_stream_state(std::uint64_t frame)
 {
+        invalidate_cursor_locked();
         ++track_generation_;
         if (buffer_) {
             static_cast<void>(buffer_->Stop());
@@ -398,8 +422,10 @@ void DirectSoundPcmAudioBackend::retarget_buffer_after_track_switch_locked(std::
         align_read_frame_to_next_output_locked();
     }
 
-std::uint64_t DirectSoundPcmAudioBackend::current_play_frame_locked() const
+std::uint64_t DirectSoundPcmAudioBackend::current_play_frame_locked(
+        bool* device_cursor_valid) const
 {
+        if (device_cursor_valid) *device_cursor_valid = false;
         if (!buffer_ || block_align_ == 0 || buffer_bytes_ == 0) {
             return stream_start_frame_;
         }
@@ -410,6 +436,7 @@ std::uint64_t DirectSoundPcmAudioBackend::current_play_frame_locked() const
                 stream_start_frame_ + submitted_frames_,
                 static_cast<std::uint64_t>(active_pcm_->frame_count()));
         }
+        if (device_cursor_valid) *device_cursor_valid = true;
         static_cast<void>(write_cursor);
         const auto queued_bytes = ring_distance_bytes(play_cursor,
             next_write_byte_, buffer_bytes_);
@@ -455,19 +482,21 @@ void DirectSoundPcmAudioBackend::render_loop()
                         buffer_playing_ = true;
                     }
                 }
-                const auto play_frame = current_play_frame_locked();
+                bool device_cursor_valid{};
+                const auto play_frame = current_play_frame_locked(&device_cursor_valid);
                 // Refresh the value position() falls back to when it cannot
                 // take the lock. Normal refill waits are 8 ms; control changes
                 // wake the worker early without blocking the video thread.
                 if (opened_ && active_pcm_->sample_rate > 0) {
-                    cached_position_.store(
+                    cache_position_locked(
                         std::min(duration(),
                             static_cast<double>(play_frame)
                                 / active_pcm_->sample_rate),
-                        std::memory_order_relaxed);
+                        device_cursor_valid);
                 }
                 if (play_frame >= active_pcm_->frame_count()
                         && read_frame_ >= active_pcm_->frame_count()) {
+                    invalidate_cursor_locked();
                     playing_ = false;
                     if (buffer_) static_cast<void>(buffer_->Stop());
                     buffer_playing_ = false;

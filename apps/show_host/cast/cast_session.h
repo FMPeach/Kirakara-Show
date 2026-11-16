@@ -13,6 +13,7 @@
 #include "mf_aac_encoder.h"
 #include "mf_d3d11_h264_encoder.h"
 #include "native_cast_backend.h"
+#include "../audio/audio_cursor_projection.h"
 #include "../audio/audio_player.h"
 #include "../media/mf_d3d11_video_decoder.h"
 #include "../overlay/host_hud_blitter.h"
@@ -107,6 +108,7 @@ struct CastSession {
     std::uint64_t frame_index{};
     std::chrono::steady_clock::time_point next_frame_due{};
     CastProgramClock program_clock;
+    AudioCursorProjection picture_cursor;
     CastPipelineDiagnostics pipeline_diagnostics;
     std::mutex capability_mutex;
     D3D11CastCapabilityReport capability_report;

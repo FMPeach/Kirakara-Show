@@ -79,6 +79,9 @@ public:
     }
 
     double position() const { return backend_->position(); }
+    AudioPositionSample position_sample() const {
+        return backend_->position_sample();
+    }
     double duration() const { return backend_->duration(); }
     bool is_open() const noexcept { return backend_->is_open(); }
     bool has_ended() const noexcept { return backend_->has_ended(); }

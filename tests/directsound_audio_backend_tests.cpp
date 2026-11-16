@@ -114,8 +114,10 @@ void exercise_backend(Fixtures& fixtures, int rate, bool benchmark_only) {
     measure_cpu("standby", 250ms);
     expect(audio.play(), "play failed");
     const auto plain_cpu = measure_cpu("playing/key=0", 1200ms);
-    const auto position = audio.position();
+    const auto first_cursor = audio.position_sample();
+    const auto position = first_cursor.seconds;
     expect(position > 0.8 && position < 1.8, "audio clock did not advance");
+    expect(first_cursor.running_epoch != 0, "playing cursor has no running epoch");
     std::vector<std::int16_t> pcm(512 * 2);
     expect(audio.read_processed_pcm_at(
         static_cast<std::uint64_t>(position * rate), pcm.data(), 512) == 512,
@@ -125,13 +127,19 @@ void exercise_backend(Fixtures& fixtures, int rate, bool benchmark_only) {
     }), "processed audio unexpectedly contains only silence");
 
     expect(audio.pause(), "pause failed");
-    const auto paused = audio.position();
+    const auto paused_cursor = audio.position_sample();
+    expect(paused_cursor.running_epoch == 0, "pause left the cached cursor eligible");
+    const auto paused = paused_cursor.seconds;
     measure_cpu("paused", 250ms);
     expect(std::abs(audio.position() - paused) < 0.02,
         "paused audio clock advanced");
     expect(audio.play(), "resume failed");
     std::this_thread::sleep_for(150ms);
-    expect(audio.position() > paused + 0.05, "resume did not advance audio");
+    const auto resumed_cursor = audio.position_sample();
+    expect(resumed_cursor.seconds > paused + 0.05, "resume did not advance audio");
+    expect(resumed_cursor.running_epoch != 0
+            && resumed_cursor.running_epoch != first_cursor.running_epoch,
+        "resume reused a previous running epoch");
 
     expect(audio.set_key_semitones(3), "pitch shift failed");
     measure_cpu("playing/key=3", 500ms);
@@ -145,6 +153,8 @@ void exercise_backend(Fixtures& fixtures, int rate, bool benchmark_only) {
     std::this_thread::sleep_for(100ms);
 
     expect(audio.seek(0.0), "replay seek failed");
+    expect(audio.position_sample().running_epoch == 0,
+        "replay seek kept the cursor of the old run");
     expect(audio.play(), "replay failed");
     std::this_thread::sleep_for(150ms);
     expect(audio.position() > 0.03 && audio.position() < 0.6,
@@ -164,6 +174,8 @@ void exercise_backend(Fixtures& fixtures, int rate, bool benchmark_only) {
         std::this_thread::sleep_for(10ms);
     }
     expect(audio.has_ended(), "audio EOF was not reported");
+    expect(audio.position_sample().running_epoch == 0,
+        "EOF still allowed cursor projection");
     const auto close_started = std::chrono::steady_clock::now();
     audio.close();
     expect(std::chrono::steady_clock::now() - close_started < 1s,

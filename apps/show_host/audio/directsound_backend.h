@@ -53,6 +53,8 @@ public:
 
     double position() const;
 
+    AudioPositionSample position_sample() const override;
+
     double duration() const;
 
     bool is_open() const noexcept;
@@ -88,7 +90,11 @@ private:
 
     void retarget_buffer_after_track_switch_locked(std::uint64_t play_frame);
 
-    std::uint64_t current_play_frame_locked() const;
+    std::uint64_t current_play_frame_locked(bool* device_cursor_valid = nullptr) const;
+
+    std::uint64_t cache_position_locked(double seconds, bool device_cursor_valid) const;
+
+    void invalidate_cursor_locked() const noexcept;
 
     void notify_render_work_locked();
 
@@ -141,6 +147,11 @@ private:
     // across the pitch-shift DSP in render_pcm_frames(), so a plain lock here
     // stalled the render loop for 5-27 ms. See position().
     mutable std::atomic<double> cached_position_{0.0};
+    // Each valid run publishes a unique tag after writing its first cache
+    // value. A nonblocking reader can reject a cache from a stopped run
+    // without waiting for the audio worker's mutex.
+    mutable std::atomic<std::uint64_t> running_cursor_epoch_{0};
+    mutable std::uint64_t next_cursor_epoch_{}; // Protected by mutex_.
     std::condition_variable cv_;
     std::uint64_t render_revision_{}; // Protected by mutex_.
     bool opened_{};

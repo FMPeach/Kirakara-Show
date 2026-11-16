@@ -142,6 +142,16 @@ if(KIRAKARA_BUILD_TESTS)
     add_test(NAME kirakara_show_native_stage_program_clock_tests
         COMMAND kirakara_show_native_stage_program_clock_tests)
 
+    add_executable(kirakara_show_audio_cursor_projection_tests
+        tests/audio_cursor_projection_tests.cpp
+        apps/show_host/cast/cast_program_clock.cpp
+        apps/show_host/cast/cast_video_buffer_state.cpp
+        apps/show_host/stage/native_stage_program_clock.cpp)
+    target_compile_features(kirakara_show_audio_cursor_projection_tests
+        PRIVATE cxx_std_20)
+    add_test(NAME kirakara_show_audio_cursor_projection_tests
+        COMMAND kirakara_show_audio_cursor_projection_tests)
+
     add_executable(kirakara_show_cast_session_lifecycle_tests
         tests/cast_session_lifecycle_tests.cpp
         apps/show_host/cast/cast_session_lifecycle.cpp)

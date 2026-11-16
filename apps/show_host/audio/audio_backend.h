@@ -8,6 +8,14 @@
 
 struct DecodedAudioBuffer;
 
+struct AudioPositionSample {
+    double seconds{};
+    // Nonzero only for a valid observation of the running device cursor.
+    // Invalid observations can still supply the existing raw position.
+    std::uint64_t running_epoch{};
+    bool from_cache{};
+};
+
 class IAudioBackend {
 public:
     virtual ~IAudioBackend() = default;
@@ -23,6 +31,7 @@ public:
     virtual bool set_local_output_enabled(bool enabled) = 0;
     virtual bool set_key_semitones(int semitones) = 0;
     virtual double position() const = 0;
+    virtual AudioPositionSample position_sample() const { return {position()}; }
     virtual double duration() const = 0;
     virtual bool is_open() const noexcept = 0;
     // True only after playback reaches the natural end of the active track.

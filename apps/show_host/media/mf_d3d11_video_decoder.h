@@ -1,5 +1,7 @@
 #pragma once
 
+#include "program_picture.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -166,6 +168,8 @@ private:
 // reads pixels back to the CPU, or owns playback time.
 class MfD3D11VideoDecoder {
 public:
+    using Picture = ProgramPicture<std::shared_ptr<const DecodedD3D11VideoFrame>>;
+
     MfD3D11VideoDecoder();
     ~MfD3D11VideoDecoder();
 
@@ -196,6 +200,14 @@ public:
         const std::wstring& source,
         std::uint64_t timeline_revision,
         double position_seconds) const;
+
+    [[nodiscard]] Picture picture_for(
+        const std::wstring& source,
+        std::uint64_t timeline_revision,
+        double raw_program_seconds,
+        double raw_sample_seconds,
+        double projected_seconds,
+        bool hold_video_tail) const;
 
     [[nodiscard]] MfD3D11VideoBufferStatus buffer_status(
         const std::wstring& source,

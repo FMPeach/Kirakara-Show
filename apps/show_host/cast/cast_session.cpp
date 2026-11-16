@@ -156,10 +156,16 @@ static std::shared_ptr<const D3D11Nv12CompositedFrame> compose_cast_nv12_overlay
             base->frame_id(), base->generation()}, cast.overlay_renderer.frame(), cast.frame_index);
 }
 
-static CastProgramClockUpdate update_cast_program_clock(
+struct CastClockTick {
+    CastProgramClockUpdate program;
+    double picture_time{};
+};
+
+static CastClockTick update_cast_program_clock(
         CastExecutionContext& host,
         const MfD3D11VideoBufferStatus& decoder_status,
         bool has_video,
+        bool picture_committed,
         std::chrono::steady_clock::time_point now) {
     CastProgramClockInput input;
     input.monotonic_seconds = cast_monotonic_seconds(now);
@@ -169,9 +175,11 @@ static CastProgramClockUpdate update_cast_program_clock(
     input.has_audio_stream = host.playback.audio.is_open();
     input.has_audio_clock =
         input.has_audio_stream && !host.playback.video_master_clock;
+    AudioPositionSample audio_sample;
     if (input.has_audio_stream) {
+        audio_sample = host.playback.audio.position_sample();
         input.audio_position_seconds = std::max(0.0,
-            host.playback.audio.position()
+            audio_sample.seconds
                 + host.playback.audio_processing.clock_offset_seconds);
         input.end_on_audio_eof = input.has_audio_clock;
         input.audio_end_of_stream = host.playback.audio.has_ended();
@@ -230,7 +238,19 @@ static CastProgramClockUpdate update_cast_program_clock(
                 static_cast<LPARAM>(revision));
         }
     }
-    return update;
+    const bool steady_playback =
+        picture_committed && input.has_audio_clock && input.playback_requested
+        && previous_state == CastProgramClockState::playing
+        && update.state == CastProgramClockState::playing
+        && !update.request_audio_pause && !update.request_audio_seek
+        && !update.request_audio_play;
+    const auto picture_time = audio_picture_time(
+        host.cast.picture_cursor, audio_sample, input.monotonic_seconds,
+        input.audio_duration_seconds,
+        host.playback.audio_processing.clock_offset_seconds,
+        update.position_seconds, host.playback.video_timeline_revision,
+        steady_playback);
+    return {update, picture_time};
 }
 
 [[nodiscard]] bool configure_cast_nv12_pipeline(
@@ -847,6 +867,7 @@ void suspend_cast_video(CastSession& cast) {
 }
 
 void shutdown_cast_pipeline_resources(CastSession& cast) {
+    cast.picture_cursor.reset();
     cast.audio_encoder.stop();
     cast.video_encoder.stop();
     cast.backend.stop();
@@ -1396,16 +1417,16 @@ static void refresh_cast_idle_background(CastSession& cast,
 static void render_cast_compute_nv12_frame(
         CastExecutionContext& host,
         const kirakara::show::win32::StageCanvas& canvas,
-        const std::shared_ptr<const DecodedD3D11VideoFrame>& decoded,
-        double stage_time,
+        MfD3D11VideoDecoder::Picture picture,
+        double program_time,
         bool has_video,
         bool transition_preopen,
         bool start_buffer_ready,
         std::uint64_t video_revision,
         std::uint64_t missed_frames) {
     std::shared_ptr<const CastNormalizedVideoFrame> normalized_video;
-    if (decoded && !transition_preopen && start_buffer_ready) {
-        normalized_video = host.cast.video_normalizer.normalize(
+    const auto normalize = [&](const auto& decoded) {
+        return host.cast.video_normalizer.normalize(
             CastVideoFrameInput{
                 decoded->texture(),
                 decoded->format(),
@@ -1414,6 +1435,14 @@ static void render_cast_compute_nv12_frame(
                 decoded->frame_id(),
                 decoded->generation(),
                 decoded->retention_token()});
+    };
+    if (picture.frame && !transition_preopen && start_buffer_ready) {
+        normalized_video = normalize(picture.frame);
+        if (!normalized_video && picture.raw_fallback) {
+            normalized_video = normalize(picture.raw_fallback);
+            picture.time_seconds = program_time;
+            host.cast.picture_cursor.reset();
+        }
     }
 
     // A video program becomes current only after its own normalized frame has
@@ -1452,7 +1481,7 @@ static void render_cast_compute_nv12_frame(
                 ? host.cast.nv12_background_frame : host.cast.nv12_idle_frame;
         if (base) {
             candidate = compose_cast_nv12_overlays(host.cast, base, *host.program,
-                stage_time, source_frame_on_time, hud);
+                picture.time_seconds, source_frame_on_time, hud);
             candidate_is_current_program = candidate && source_frame_on_time;
             if (candidate) candidate_base = base;
         }
@@ -1480,7 +1509,7 @@ static void render_cast_compute_nv12_frame(
         if (candidate_base) {
             host.cast.last_overlay_base = std::move(candidate_base);
             host.cast.last_overlay_program = host.program;
-            host.cast.last_overlay_time = stage_time;
+            host.cast.last_overlay_time = picture.time_seconds;
             host.cast.last_overlay_draw_program = source_frame_on_time;
         }
         if (candidate_is_current_program) host.cast.lifecycle.mark_program_frame_committed(video_revision);
@@ -1494,7 +1523,7 @@ static void render_cast_compute_nv12_frame(
         log_line("cast handoff: first frame ready; clock released");
     }
     const auto audio_chunk_start_time = cast_audio_chunk_start_time(
-        stage_time,
+        program_time,
         missed_frames,
         canvas.frame_rate_num,
         canvas.frame_rate_den);
@@ -1547,7 +1576,7 @@ void render_cast_frame(CastSession& cast) {
 
     const auto state = host.playback.state.load();
     const bool playing = state == SHOW_STATE_PLAYING;
-    double stage_time = host.cast.program_clock.position_seconds();
+    const double stage_time = host.cast.program_clock.position_seconds();
     // The five-second guard is diagnostic only. CastProgramClock remains
     // frozen until the decoder reaches high-water; timeout must never release
     // audio into a black/old video program.
@@ -1588,9 +1617,14 @@ void render_cast_frame(CastSession& cast) {
         ? host.cast.video_decoder.buffer_status(
             host.playback.current_media.video, video_revision)
         : MfD3D11VideoBufferStatus{};
-    const auto clock_update = update_cast_program_clock(
-        host, decoder_buffer, has_video, now);
-    stage_time = clock_update.position_seconds;
+    const bool picture_committed = has_video && !lifecycle.start_gate_pending
+        && !lifecycle.holding_previous_output
+        && cast_program_ready_for_timeline(lifecycle.program_ready,
+            lifecycle.ready_timeline_revision, video_revision);
+    const auto tick = update_cast_program_clock(
+        host, decoder_buffer, has_video, picture_committed, now);
+    const auto& clock_update = tick.program;
+    const auto program_time = clock_update.position_seconds;
     host.cast.lifecycle.apply_clock_state(clock_update.state);
     if (clock_update.state == CastProgramClockState::ended
             && state == SHOW_STATE_PLAYING) {
@@ -1616,28 +1650,25 @@ void render_cast_frame(CastSession& cast) {
             == MfD3D11VideoAvailability::end_of_stream;
     const auto video_sample_time = hold_video_tail_for_audio
             && decoder_buffer.buffered_end_seconds > 0.0
-        ? std::min(stage_time, decoder_buffer.buffered_end_seconds)
-        : stage_time;
+        ? std::min(program_time, decoder_buffer.buffered_end_seconds)
+        : program_time;
 
-    std::shared_ptr<const DecodedD3D11VideoFrame> decoded;
+    MfD3D11VideoDecoder::Picture picture{{}, {}, program_time};
     if (decoder_state != MfD3D11PlaybackState::idle) {
-        const auto& source = host.playback.current_media.video;
-        decoded = host.cast.video_decoder.texture_for(
-            source, video_revision, video_sample_time);
-        if (decoded && !hold_video_tail_for_audio
-                && !video_frame_matches_program_time(
-                decoded->timestamp_seconds(),
-                decoded->duration_seconds(),
-                stage_time)) {
-            decoded.reset();
+        picture = host.cast.video_decoder.picture_for(
+            host.playback.current_media.video, video_revision, program_time,
+            video_sample_time, tick.picture_time, hold_video_tail_for_audio);
+        if (tick.picture_time != program_time
+                && picture.time_seconds == program_time) {
+            host.cast.picture_cursor.reset();
         }
     }
     if (cast_uses_compute_nv12(host.cast)) {
         render_cast_compute_nv12_frame(
             host,
             canvas,
-            decoded,
-            stage_time,
+            std::move(picture),
+            program_time,
             has_video,
             transition_preopen,
             start_buffer_ready,
@@ -1647,10 +1678,18 @@ void render_cast_frame(CastSession& cast) {
     }
     bool composed_video = false;
     bool video_frame_on_time = !has_video;
+    auto& decoded = picture.frame;
     if (decoded && !transition_preopen && start_buffer_ready) {
         const auto normalize_started = CastPipelineDiagnostics::qpc_now();
         composed_video = cast_renderer.compose_video_texture(
             decoded->texture(), decoded->width(), decoded->height());
+        if (!composed_video && picture.raw_fallback) {
+            decoded = std::move(picture.raw_fallback);
+            picture.time_seconds = program_time;
+            host.cast.picture_cursor.reset();
+            composed_video = cast_renderer.compose_video_texture(
+                decoded->texture(), decoded->width(), decoded->height());
+        }
         const auto normalize_finished = CastPipelineDiagnostics::qpc_now();
         if (composed_video) {
             const bool repeated = host.cast.last_decoded_identity_valid
@@ -1692,7 +1731,7 @@ void render_cast_frame(CastSession& cast) {
             host.playback.config.song_title)
         && video_frame_on_time
         && kirakara::show::song_title_visible(
-            stage_time, host.playback.config.song_title);
+            picture.time_seconds, host.playback.config.song_title);
     const bool lyric_overlay_active = video_frame_on_time
         && !host.playback.document.lines.empty();
     if (!holding_last_complete_cast_frame
@@ -1712,7 +1751,7 @@ void render_cast_frame(CastSession& cast) {
                         frame.overlay_render_target)) {
                 static_cast<void>(host.cast.title_renderer.render(
                     host.playback.config.song_title,
-                    stage_time,
+                    picture.time_seconds,
                     host.playback.config.engine.fade_duration));
             }
             if (lyric_overlay_active
@@ -1720,7 +1759,7 @@ void render_cast_frame(CastSession& cast) {
                         frame.overlay_render_target)) {
                 static_cast<void>(host.cast.lyric_renderer.render_overlay(
                     host.playback.document,
-                    stage_time,
+                    picture.time_seconds,
                     host.playback.config.engine,
                     host.playback.config.style));
             }
@@ -1790,7 +1829,7 @@ void render_cast_frame(CastSession& cast) {
     // continuous PCM chunk spanning those slots, starting at the corresponding
     // earlier program time, while the video transport remains live/current.
     const auto audio_chunk_start_time = cast_audio_chunk_start_time(
-        stage_time,
+        program_time,
         missed_frames,
         canvas.frame_rate_num,
         canvas.frame_rate_den);

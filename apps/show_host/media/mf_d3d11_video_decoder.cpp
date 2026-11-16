@@ -1866,16 +1866,8 @@ struct MfD3D11VideoDecoder::Impl {
         request_ready.notify_one();
     }
 
-    std::shared_ptr<const DecodedD3D11VideoFrame> texture_for(
-            const std::wstring& source,
-            std::uint64_t timeline_revision,
+    std::shared_ptr<const DecodedD3D11VideoFrame> texture_at_locked(
             double position_seconds) const {
-        std::lock_guard lock(mutex);
-        if (decoded.source != source
-                || decoded.timeline_revision != timeline_revision
-                || decoded.textures.empty()) {
-            return {};
-        }
         if (decoded.end_of_stream
                 && directive.state == MfD3D11PlaybackState::playing) {
             const auto& last = decoded.textures.back();
@@ -1895,6 +1887,44 @@ struct MfD3D11VideoDecoder::Impl {
             selected = texture;
         }
         return selected;
+    }
+
+    bool has_picture_locked(
+            const std::wstring& source, std::uint64_t revision) const {
+        return decoded.source == source && decoded.timeline_revision == revision
+            && !decoded.textures.empty();
+    }
+
+    std::shared_ptr<const DecodedD3D11VideoFrame> texture_for(
+            const std::wstring& source,
+            std::uint64_t timeline_revision,
+            double position_seconds) const {
+        std::lock_guard lock(mutex);
+        return has_picture_locked(source, timeline_revision)
+            ? texture_at_locked(position_seconds) : nullptr;
+    }
+
+    MfD3D11VideoDecoder::Picture picture_for(
+            const std::wstring& source,
+            std::uint64_t timeline_revision,
+            double raw_program_seconds,
+            double raw_sample_seconds,
+            double projected_seconds,
+            bool hold_video_tail) const {
+        std::lock_guard lock(mutex);
+        if (!has_picture_locked(source, timeline_revision)) {
+            return {{}, {}, raw_program_seconds};
+        }
+        if (decoded.availability != MfD3D11VideoAvailability::ready
+                || directive.state != MfD3D11PlaybackState::playing) {
+            projected_seconds = raw_program_seconds;
+        }
+        // One lock, one decoder generation. The second lookup, if any, only
+        // inspects the same short queue (no MF call, seek, decode or wakeup).
+        return select_program_picture(
+            raw_program_seconds, raw_sample_seconds, projected_seconds,
+            hold_video_tail, kTimestampToleranceSeconds,
+            [&](double time) { return texture_at_locked(time); });
     }
 
     MfD3D11VideoBufferStatus buffer_status(
@@ -2346,6 +2376,18 @@ MfD3D11VideoDecoder::texture_for(
         double position_seconds) const {
     return impl_ ? impl_->texture_for(
         source, timeline_revision, position_seconds) : nullptr;
+}
+
+MfD3D11VideoDecoder::Picture MfD3D11VideoDecoder::picture_for(
+        const std::wstring& source,
+        std::uint64_t timeline_revision,
+        double raw_program_seconds,
+        double raw_sample_seconds,
+        double projected_seconds,
+        bool hold_video_tail) const {
+    return impl_ ? impl_->picture_for(source, timeline_revision,
+        raw_program_seconds, raw_sample_seconds, projected_seconds,
+        hold_video_tail) : Picture{{}, {}, raw_program_seconds};
 }
 
 MfD3D11VideoBufferStatus MfD3D11VideoDecoder::buffer_status(

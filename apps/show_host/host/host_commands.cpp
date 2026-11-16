@@ -22,8 +22,9 @@ bool handle_idle_background_image(ShowHost& host, const std::wstring& path) {
 }
 
 void render_idle_frame(ShowHost& host) {
+    std::optional<NativeStagePictureTime> projected;
     if (!has_ts_stage_output(host)) {
-        service_native_stage_program(host);
+        projected = service_native_stage_program(host);
         if (!native_stage_program_clock_is_active(host)) {
             host.playback.player.apply_pending_seek();
             host.playback.player.try_play_if_requested();
@@ -37,7 +38,7 @@ void render_idle_frame(ShowHost& host) {
         || has_active_stage_texture_source(host)
         ;
     if (native_output_visible && !has_ts_stage_output(host)) {
-        render_unified_native_stage(host);
+        render_unified_native_stage(host, projected);
     }
     if (host.native_stage.native_video_start_pending
             && (!native_output_visible || has_ts_stage_output(host))) {
