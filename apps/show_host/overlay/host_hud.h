@@ -3,6 +3,7 @@
 #include "lan_state_monitor.h"
 #include "physical_hud_output.h"
 #include "host_hud_controller.h"
+#include "host_announcement_renderer.h"
 #include "../show_host_api.h"
 #include <atomic>
 
@@ -11,11 +12,14 @@ struct HostHudRuntime {
     std::atomic<std::shared_ptr<const HostHudState>> state;
     std::atomic<std::shared_ptr<const HostHudQrImage>> qr;
     std::atomic<std::shared_ptr<const HostHudActionEvent>> action;
+    std::atomic<std::shared_ptr<const HostAnnouncementText>> announcement;
+    std::uint64_t announcement_submission{};
     std::atomic<bool> lan_available{};
     std::atomic<std::uint64_t> lan_revision{};
     LanStateMonitor network;
     HostHudRenderer physical_renderer;
     HostHudActionRenderer action_renderer;
+    HostAnnouncementRenderer announcement_renderer;
     PhysicalHudOutput physical_output;
     HostHudController controller;
     std::atomic<std::uint64_t> program_instance{}, discontinuity_revision{};

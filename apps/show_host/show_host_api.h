@@ -527,9 +527,12 @@ SHOW_HOST_API bool show_host_get_cast_capability_report(
 SHOW_HOST_API uint32_t show_host_get_active_video_decoder_owners(
     ShowHostHandle handle);
 
-/// Replace the audience-facing overlay state. Phase 6 stores and transports
-/// this state but deliberately renders no temporary QR or announcement art.
-/// Asset paths point to App-owned cache files and are copied synchronously.
+/// Submit audience overlay state. announcement_text is one plain-text line;
+/// each accepted submission restarts its scroll, even when text is unchanged.
+/// Enable it with SHOW_HOST_HUD_ANNOUNCEMENT_ENABLED in the audience HUD state.
+/// Announcement pixels appear only on physical Stage and Cast, not Preview.
+/// Strings/assets are copied synchronously; announcement text is limited to
+/// 16384 UTF-16 code units. The legacy QR/artwork fields remain reserved.
 SHOW_HOST_API bool show_host_set_stage_overlay_state(
     ShowHostHandle handle,
     const ShowHostStageOverlayState* state);

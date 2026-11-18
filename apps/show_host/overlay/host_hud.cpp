@@ -45,6 +45,7 @@ void refresh_host_lan_state(ShowHost& host) {
 }
 void render_physical_hud(ShowHost& host) {
     if (has_ts_stage_output(host)) {
+        host.hud.announcement_renderer.hide();
         cancel_animation_timer(host);
         static_cast<void>(host.hud.physical_output.present({}));
         return;
@@ -61,6 +62,7 @@ void render_physical_hud(ShowHost& host) {
         host.native_stage.stage_program_ready || (active && host.playback.current_media.video.empty() && advancing),
         host.output_transition.native_transition_holding});
     if (!has_physical_stage_output(host)) {
+        host.hud.announcement_renderer.hide();
         cancel_animation_timer(host);
         static_cast<void>(host.hud.physical_output.present({}));
         return;
@@ -77,14 +79,18 @@ void render_physical_hud(ShowHost& host) {
     const auto appearance = evaluate_host_hud_action(event.get(), now);
     layers.action = host.hud.action_renderer.render(
         device, profile.width, profile.height, layers.card, appearance);
+    const auto announcement = host.hud.announcement.load(std::memory_order_acquire);
+    layers.announcement = host.hud.announcement_renderer.render(device,
+        profile.width, profile.height, announcement.get(),
+        state && state->options.announcement_enabled, layers.card, now);
     // While idle, wait until the fade starts. During a fade, tick only the HUD.
     double deadline = layers.action.visible ? appearance.next_deadline : 0;
-    if (layers.card.animating || layers.action.animating) {
+    if (layers.card.animating || layers.action.animating || layers.announcement.animating) {
         const auto next_tick = now + .016;
         deadline = deadline > 0 ? std::min(deadline, next_tick) : next_tick;
     }
     schedule_animation_timer(host, now, deadline);
-    if (!layers.card.visible && !layers.action.visible) {
+    if (!layers.card.visible && !layers.action.visible && !layers.announcement.visible) {
         static_cast<void>(host.hud.physical_output.present({}));
     } else if (host.hud.physical_output.initialize(host.stage_surface_window, device)) {
         static_cast<void>(host.hud.physical_output.present(layers));
@@ -101,4 +107,5 @@ void release_physical_hud(ShowHost& host) {
     host.hud.physical_output.shutdown();
     host.hud.physical_renderer.reset();
     host.hud.action_renderer.reset();
+    host.hud.announcement_renderer.reset();
 }

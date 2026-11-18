@@ -136,6 +136,11 @@ static HostHudLayers render_cast_hud(CastSession& cast, const CastProgramSnapsho
         layers.action = cast.hud_action_renderer.render(device, canvas.width,
             canvas.height, layers.card, evaluate_host_hud_action(event.get(), now));
     }
+    const auto announcement = cast.program.announcement
+        ? cast.program.announcement->load(std::memory_order_acquire) : nullptr;
+    layers.announcement = cast.announcement_renderer.render(device,
+        canvas.width, canvas.height, announcement.get(),
+        state && state->options.announcement_enabled, layers.card, now);
     return layers;
 }
 
@@ -162,6 +167,31 @@ struct CastClockTick {
     CastProgramClockUpdate program;
     std::optional<double> projected_presentation_time;
 };
+
+// Keep media pixels and program time frozen during load, but let the existing
+// output tick update independent HUD pixels (including the scrolling strip).
+static void refresh_cast_keepalive_hud(CastSession& cast) {
+    const auto state=cast.program.hud_state?cast.program.hud_state->load():nullptr;
+    const auto text=cast.program.announcement?cast.program.announcement->load():nullptr;
+    if ((!state || !state->options.announcement_enabled || !text || !text->visible)
+            && !cast.announcement_renderer.visible()) return;
+    const auto snapshot = cast.program_snapshot.load(std::memory_order_acquire);
+    if (!snapshot) return;
+    const auto hud = render_cast_hud(cast, *snapshot);
+    if (cast_uses_compute_nv12(cast)) {
+        if (cast.last_overlay_base && cast.last_overlay_program) {
+            if (auto frame = compose_cast_nv12_overlays(cast, cast.last_overlay_base,
+                    *cast.last_overlay_program, cast.last_overlay_time,
+                    cast.last_overlay_lyric_time, cast.last_overlay_draw_program, hud)) {
+                cast.last_nv12_frame = std::move(frame);
+            }
+        }
+    } else {
+        bool changed{};
+        if (cast.hud_bgra_layer.apply(cast.stage_renderer.compositor().current_frame().overlay_render_target,
+                hud, false, changed) && changed) cast.stage_renderer.finalize_frame();
+    }
+}
 
 static CastClockTick update_cast_program_clock(
         CastExecutionContext& host,
@@ -526,6 +556,7 @@ void cast_load_keepalive_main(
             continue;
         }
 
+        refresh_cast_keepalive_hud(cast);
         const auto submitted_frame = cast.frame_index;
         const auto frame_time_100ns = static_cast<std::int64_t>(
             submitted_frame) * frame_duration_100ns;
@@ -1921,6 +1952,7 @@ void reset_cast_nv12_pipeline(CastSession& cast) noexcept {
     cast.hud_bgra_layer.reset();
     cast.hud_renderer.reset();
     cast.hud_action_renderer.reset();
+    cast.announcement_renderer.reset();
     cast.last_nv12_frame.reset();
     cast.nv12_background_frame.reset();
     cast.nv12_background_source.reset();

@@ -204,6 +204,30 @@ Wi-Fi 同时设置 `SHOW_HOST_HUD_NETWORK_WIFI` 标志，卡片会显示对应�
 二维码显示期间，列表、下载状态和图片更新直接沿用当前透明度。换歌加载时保留原有展示
 阶段，重复网络通知按实际网卡和地址去重。卡片文字与图片使用缓存，静态显示后停止动画更新。
 
+### 顶部滚动报幕
+
+报幕与二维码、待播列表同属 ShowHost 的观众浮窗，只出现在实体第二屏和 Cast。启用时，在
+Audience HUD 的 `flags` 中加入 `SHOW_HOST_HUD_ANNOUNCEMENT_ENABLED`，再通过已有接口提交全文：
+
+```c
+ShowHostStageOverlayState overlay = {0};
+overlay.struct_size = sizeof(overlay);
+overlay.revision = overlay_revision;
+overlay.flags = SHOW_STAGE_OVERLAY_ANNOUNCEMENT_VISIBLE;
+overlay.qr_decoration.struct_size = sizeof(ShowHostStageOverlayAsset);
+overlay.announcement_decoration.struct_size = sizeof(ShowHostStageOverlayAsset);
+overlay.announcement_text = L"欢迎点歌　·　应用提供的任意一行文字";
+show_host_set_stage_overlay_state(host, &overlay);
+```
+
+应用负责文案、顺序和分隔符。Show 用统一样式绘制一行纯文本，长度上限为 16384 个 UTF-16
+代码单元。每次成功提交都会从右侧重新开始；重唱时重发同一文本即可。普通状态同步无需
+重复提交。相同文字的字体和布局会继续复用。
+
+报幕按单调时间以固定速度滚动，空闲、暂停和缓冲期间也能显示。二维码在场时避让卡片，
+待播列表在场时隐藏，两者都收起时扩展宽度。应用可用空文本并清除可见标志来收起报幕，
+也可关闭 Audience HUD 中的报幕开关。
+
 ### 网络变化
 
 `show_host_get_lan_state()` 读取局域网状态，`show_host_set_lan_state_callback()` 订阅 Windows

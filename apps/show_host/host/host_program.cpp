@@ -58,6 +58,12 @@ bool handle_stage_overlay_state(
         request.state.revision, std::memory_order_release);
     publish_cast_overlay_snapshot(
         host.cast, request.state, request.state.revision);
+    auto announcement = std::make_shared<HostAnnouncementText>();
+    announcement->submission = ++host.hud.announcement_submission;
+    announcement->visible = request.state.announcement.visible;
+    announcement->text = request.state.announcement.text;
+    host.hud.announcement.store(std::move(announcement), std::memory_order_release);
+    request_host_hud_refresh(host);
     return true;
 }
 

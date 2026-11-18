@@ -17,6 +17,7 @@
 #include "../audio/audio_player.h"
 #include "../media/mf_d3d11_video_decoder.h"
 #include "../overlay/host_hud_blitter.h"
+#include "../overlay/host_announcement_renderer.h"
 
 #include "kirakara/show/config.hpp"
 #include "kirakara/show/stage_overlay.hpp"
@@ -69,6 +70,7 @@ struct CastProgramBindings {
     HostHudController* hud_controller{};
     const std::atomic<std::uint64_t>* lan_revision{};
     const std::atomic<std::shared_ptr<const HostHudActionEvent>>* hud_action{};
+    const std::atomic<std::shared_ptr<const HostAnnouncementText>>* announcement{};
 
     [[nodiscard]] bool valid() const noexcept;
 };
@@ -87,6 +89,7 @@ struct CastSession {
     CastStageRenderer stage_renderer;
     HostHudRenderer hud_renderer;
     HostHudActionRenderer hud_action_renderer;
+    HostAnnouncementRenderer announcement_renderer;
     HostHudRetainedBgraLayer hud_bgra_layer;
     std::shared_ptr<const CastNormalizedVideoFrame> last_overlay_base;
     std::shared_ptr<const CastProgramSnapshot> last_overlay_program;

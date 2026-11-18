@@ -13,6 +13,8 @@ struct HostHudFrame {
     bool animating{};
     // A ready card at zero opacity still owns its placement during handoff.
     bool layout_ready{};
+    HostHudScene scene{HostHudScene::hidden};
+    HostHudScene target_scene{HostHudScene::hidden};
 
     [[nodiscard]] bool same_bounds(const HostHudFrame& other) const noexcept {
         return x == other.x && y == other.y && width == other.width && height == other.height;
@@ -37,6 +39,7 @@ inline constexpr float kHostHudRight = 50;
 struct HostHudLayers {
     HostHudFrame card;
     HostHudFrame action;
+    HostHudFrame announcement;
 };
 
 // Owner-thread cache of the small card only, shared by the two Host adapters.

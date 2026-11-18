@@ -78,6 +78,14 @@ int main() {
         layers.card.visible = false;
         expect(output.present(layers) && output.submissions() == 3, "action survives independently");
         expect(output.present({}) && output.submissions() == 3, "hide both without new pixels");
+        layers={};
+        layers.announcement={card.native_texture(),15,10,100,60,1,true};
+        expect(output.present(layers)&&output.submissions()==4,"independent announcement layer");
+        for(int i=0;i<30;++i) expect(output.present(layers),"retain announcement pixels");
+        expect(output.submissions()==4,"unchanged announcement does not copy");
+        ++layers.announcement.revision;
+        expect(output.present(layers)&&output.submissions()==5,"only announcement content is presented");
+        expect(output.present({}),"remove announcement without changing base");
         expect(renderer.rendered_frames() == 1 && !preview.peek_latest(),
             "HUD changes never render or publish clean preview frames");
         expect(clean->timing.generation == 1 && clean->timing.frame_id == 0,

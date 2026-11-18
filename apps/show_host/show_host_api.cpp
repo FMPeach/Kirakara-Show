@@ -73,6 +73,8 @@ bool import_overlay_state(const ShowHostStageOverlayState& input,
     output.qr.payload = copied_text(input.qr_payload);
     output.announcement.visible =
         (input.flags & SHOW_STAGE_OVERLAY_ANNOUNCEMENT_VISIBLE) != 0;
+    if (input.announcement_text && wcsnlen(input.announcement_text,
+            kHostAnnouncementMaxTextUnits + 1) > kHostAnnouncementMaxTextUnits) return false;
     output.announcement.text = copied_text(input.announcement_text);
     return import_overlay_asset(input.qr_decoration, output.qr.decoration)
         && import_overlay_asset(input.announcement_decoration,

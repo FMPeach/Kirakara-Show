@@ -14,8 +14,8 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-// Cast C retains just the pixels under the two tiles so a paused/held frame
-// can move or remove either without rebuilding the program frame.
+// Cast C retains only pixels under the HUD tiles, so a paused/held frame can
+// scroll, move or remove them without rebuilding the program frame.
 class HostHudRetainedBgraLayer {
 public:
     HostHudRetainedBgraLayer();

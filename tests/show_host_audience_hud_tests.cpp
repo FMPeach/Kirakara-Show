@@ -620,6 +620,34 @@ int main(int argc, char** argv) {
         show_host_set_lan_state_callback(handle, nullptr, nullptr);
         show_host_destroy(handle);
     }
+    {
+        const auto handle=show_host_create();
+        expect(handle!=nullptr,"announcement Host");
+        auto* host=static_cast<ShowHost*>(handle);
+        ShowHostStageOverlayState announcement{};
+        announcement.struct_size=sizeof(announcement);
+        announcement.revision=1;
+        announcement.flags=SHOW_STAGE_OVERLAY_ANNOUNCEMENT_VISIBLE;
+        announcement.qr_decoration.struct_size=sizeof(ShowHostStageOverlayAsset);
+        announcement.announcement_decoration.struct_size=sizeof(ShowHostStageOverlayAsset);
+        wchar_t message[]=L"固定公告 · 正在播放只是普通文字";
+        announcement.announcement_text=message;
+        expect(show_host_set_stage_overlay_state(handle,&announcement),"existing plain text ABI accepts announcement");
+        const auto first=host->hud.announcement.load();
+        expect(first&&first->visible&&first->submission,"text independent of a media program");
+        expect(show_host_set_stage_overlay_state(handle,&announcement)
+            &&host->hud.announcement.load()->submission>first->submission,
+            "identical text at the same public revision restarts presentation");
+        message[0]=L'X';
+        expect(host->hud.announcement.load()->text==first->text,"announcement owns its string");
+        std::wstring too_long(kHostAnnouncementMaxTextUnits+1,L'a');
+        announcement.announcement_text=too_long.c_str();
+        const auto accepted=host->hud.announcement.load();
+        expect(!show_host_set_stage_overlay_state(handle,&announcement)
+            &&host->hud.announcement.load()==accepted,"oversized text leaves prior content intact");
+        expect(show_host_get_active_video_decoder_owners(handle)==0,"announcement never starts a decoder");
+        show_host_destroy(handle);
+    }
     CoUninitialize();
     std::cout << "Audience HUD cache, network gate, scaling and additive FFI passed.\n";
 }

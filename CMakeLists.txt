@@ -170,6 +170,9 @@ endif()
 
 if(WIN32)
     if(KIRAKARA_BUILD_TESTS)
+        add_executable(kirakara_show_announcement_scroll_tests tests/announcement_scroll_tests.cpp)
+        target_compile_features(kirakara_show_announcement_scroll_tests PRIVATE cxx_std_20)
+        add_test(NAME kirakara_show_announcement_scroll_tests COMMAND kirakara_show_announcement_scroll_tests)
         add_executable(kirakara_show_hud_controller_tests tests/host_hud_controller_tests.cpp
             apps/show_host/overlay/host_hud_controller.cpp)
         target_compile_features(kirakara_show_hud_controller_tests PRIVATE cxx_std_20)
@@ -236,6 +239,7 @@ if(WIN32)
         PUBLIC Kirakara::ShowWin32 PRIVATE d3d11 windowscodecs ole32 uuid)
 
     add_library(kirakara_show_host_hud STATIC
+        apps/show_host/overlay/host_announcement_renderer.cpp
         apps/show_host/overlay/physical_hud_output.cpp
         apps/show_host/overlay/host_hud_action_renderer.cpp
         apps/show_host/overlay/host_hud_renderer.cpp
@@ -314,6 +318,15 @@ if(WIN32)
         endif()
         add_test(NAME kirakara_show_physical_hud_output_tests
             COMMAND kirakara_show_physical_hud_output_tests)
+
+        add_executable(kirakara_show_announcement_renderer_tests tests/announcement_renderer_tests.cpp)
+        target_compile_features(kirakara_show_announcement_renderer_tests PRIVATE cxx_std_20)
+        target_compile_definitions(kirakara_show_announcement_renderer_tests PRIVATE NOMINMAX)
+        target_link_libraries(kirakara_show_announcement_renderer_tests PRIVATE kirakara_show_host_hud d3d11 ole32 windowscodecs uuid psapi)
+        if(MINGW)
+            target_link_options(kirakara_show_announcement_renderer_tests PRIVATE -static -static-libgcc -static-libstdc++)
+        endif()
+        add_test(NAME kirakara_show_announcement_renderer_tests COMMAND kirakara_show_announcement_renderer_tests)
 
         add_executable(kirakara_show_d3d11_cast_capabilities_probe
             tests/d3d11_cast_capabilities_probe.cpp

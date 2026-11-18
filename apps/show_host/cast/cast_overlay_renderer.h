@@ -42,7 +42,7 @@ struct CastOverlayFrame {
     bool lyrics_drawn{};
     // Program band and precise tile coverage. A tile straddling the band can
     // contribute both a strip above and a strip below it.
-    std::array<CastOverlayRect, 5> coverage_regions{};
+    std::array<CastOverlayRect, 7> coverage_regions{};
     std::uint32_t coverage_count{};
 };
 

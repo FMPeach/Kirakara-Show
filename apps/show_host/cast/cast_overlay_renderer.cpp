@@ -275,8 +275,8 @@ struct CastOverlayRenderer::Impl {
     std::uint64_t last_program_signature{};
     bool signature_valid{};
     CastOverlayRect previous_coverage;
-    std::array<HostHudFrame, 2> previous_hud;
-    std::array<HostHudBlitter, 2> hud_blitters;
+    std::array<HostHudFrame, 3> previous_hud;
+    std::array<HostHudBlitter, 3> hud_blitters;
 
     bool clear_transparent() {
         surface.begin_draw();
@@ -356,8 +356,9 @@ struct CastOverlayRenderer::Impl {
             && title_opacity > 0.0F;
         const bool lyrics_active = frame_has_visible_lyrics(lyric_frame);
         const auto layers = hud ? *hud : HostHudLayers{};
-        const std::array tiles{layers.card, layers.action};
-        const auto empty = !title_active && !lyrics_active && !tiles[0].visible && !tiles[1].visible;
+        const std::array tiles{layers.card, layers.action, layers.announcement};
+        const auto empty = !title_active && !lyrics_active
+            && std::none_of(tiles.begin(),tiles.end(),[](const auto& t){return t.visible;});
         const auto program_signature = overlay_signature(
             lyric_frame, title_opacity, title_active, lyrics_active,
             content_revision);
@@ -367,37 +368,44 @@ struct CastOverlayRenderer::Impl {
         const auto tile_rect = [&](const HostHudFrame& tile) {
             return tile_coverage(tile, frame.width, frame.height);
         };
-        const std::array current{current_coverage, tile_rect(tiles[0]), tile_rect(tiles[1])};
+        const std::array current{current_coverage, tile_rect(tiles[0]), tile_rect(tiles[1]), tile_rect(tiles[2])};
         const std::array previous{previous_coverage, tile_rect(previous_hud[0]),
-            tile_rect(previous_hud[1])};
+            tile_rect(previous_hud[1]), tile_rect(previous_hud[2])};
 
         frame.changed = false;
         frame.dirty_rect = {};
-        frame.coverage_rect = union_rect(union_rect(current[0], current[1]), current[2]);
+        frame.coverage_rect = {};
+        for (const auto& rect : current) frame.coverage_rect = union_rect(frame.coverage_rect,rect);
         frame.coverage_regions = {};
         frame.coverage_count = 0;
         if (!current[0].empty()) frame.coverage_regions[frame.coverage_count++] = current[0];
         // Rounding out to even texels can touch at very small output sizes.
-        if (intersects(current[1], current[2])) {
-            append_tile_coverage(frame, current[0], union_rect(current[1], current[2]));
-        } else {
-            append_tile_coverage(frame, current[0], current[1]);
-            append_tile_coverage(frame, current[0], current[2]);
+        std::array regions{current[1],current[2],current[3]};
+        for (std::size_t pass=0;pass<regions.size();++pass) {
+            for (std::size_t i=0;i<regions.size();++i) {
+                for (std::size_t j=i+1;j<regions.size();++j) {
+                    if (intersects(regions[i],regions[j])) {
+                        regions[i]=union_rect(regions[i],regions[j]); regions[j]={};
+                    }
+                }
+            }
         }
+        for (const auto& rect : regions) append_tile_coverage(frame,current[0],rect);
         frame.title_drawn = title_active;
         frame.lyrics_drawn = lyrics_active;
         std::array dirty{
             !signature_valid || program_signature != last_program_signature,
             !signature_valid || !tiles[0].same_pixels(previous_hud[0]),
             !signature_valid || !tiles[1].same_pixels(previous_hud[1]),
+            !signature_valid || !tiles[2].same_pixels(previous_hud[2]),
         };
         if (empty && frame.empty && previous[0].empty()
-                && previous[1].empty() && previous[2].empty()) {
+                && previous[1].empty() && previous[2].empty() && previous[3].empty()) {
             last_program_signature = program_signature;
             signature_valid = true;
             return true;
         }
-        if (!dirty[0] && !dirty[1] && !dirty[2]) return true;
+        if (std::none_of(dirty.begin(),dirty.end(),[](bool v){return v;})) return true;
 
         const auto started = diagnostics
             ? CastPipelineDiagnostics::qpc_now() : 0;

@@ -31,7 +31,7 @@ struct PhysicalHudOutput::Impl {
     ComPtr<IDCompositionDevice> composition;
     ComPtr<IDCompositionTarget> target;
     ComPtr<IDCompositionVisual> root;
-    Layer main, action;
+    Layer main, action, announcement;
     std::uint64_t submitted{};
     HRESULT error{S_OK};
 
@@ -47,6 +47,7 @@ struct PhysicalHudOutput::Impl {
         }
         main = {};
         action = {};
+        announcement = {};
         root.Reset();
         target.Reset();
         composition.Reset();
@@ -170,7 +171,8 @@ struct PhysicalHudOutput::Impl {
             dirty = true;
         }
         if (!layer.visible) {
-            const auto* reference = &layer == &action ? &main : &action;
+            const auto* reference = &layer == &action ? &main
+                : &layer == &announcement && main.visible ? &main : &action;
             // The action sits above the main card if their edges ever meet.
             if (!check(root->AddVisual(layer.visual.Get(), &layer == &action,
                     reference->visible ? reference->visual.Get() : nullptr))) return false;
@@ -181,9 +183,10 @@ struct PhysicalHudOutput::Impl {
     }
 
     bool present(const HostHudLayers& layers) {
-        if (!target) return !layers.card.visible && !layers.action.visible;
+        if (!target) return !layers.card.visible && !layers.action.visible && !layers.announcement.visible;
         bool dirty{};
         if (!update(main, layers.card, dirty) || !update(action, layers.action, dirty)
+                || !update(announcement, layers.announcement, dirty)
                 || (dirty && !check(composition->Commit()))) {
             // Recover both layers together instead of committing half a layout.
             shutdown();

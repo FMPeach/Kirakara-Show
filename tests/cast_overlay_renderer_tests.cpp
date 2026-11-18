@@ -1,6 +1,7 @@
 #include "../apps/show_host/cast/cast_overlay_renderer.h"
 #include "../apps/show_host/cast/cast_pipeline_diagnostics.h"
 #include "../apps/show_host/overlay/host_hud_renderer.h"
+#include "../apps/show_host/overlay/host_announcement_renderer.h"
 
 #include "kirakara/show/timeline.hpp"
 
@@ -430,6 +431,28 @@ int main() {
             lyric_renderer, &title_renderer, &hud), "remove both HUD tiles");
         expect(read_bgra(device, context, static_cast<ID3D11Texture2D*>(overlay.frame().texture)) == clean,
             "Cast A restores exactly the program overlay");
+    }
+    {
+        HostAnnouncementRenderer ticker;
+        HostAnnouncementText text{1,true,L"普通纯文本　·　正在播放不是特殊关键词"};
+        HostHudLayers layers;
+        layers.announcement=ticker.render(device,320,180,&text,true,{},100);
+        expect(overlay.render(document,empty_title,1.5,engine,style,17,
+            lyric_renderer,&title_renderer,&layers),"third HUD tile");
+        const auto initial=overlay.frame().content_version;
+        layers.announcement=ticker.render(device,320,180,&text,true,{},108);
+        expect(overlay.render(document,empty_title,1.5,engine,style,17,
+            lyric_renderer,&title_renderer,&layers)&&overlay.frame().content_version>initial,
+            "ticker changes while lyric program time remains paused");
+        const auto& frame=overlay.frame();
+        expect(frame.coverage_count<=frame.coverage_regions.size(),"bounded ticker coverage");
+        for(std::uint32_t i=0;i<frame.coverage_count;++i)for(std::uint32_t j=i+1;j<frame.coverage_count;++j) {
+            const auto a=frame.coverage_regions[i],b=frame.coverage_regions[j];
+            expect(a.x+a.width<=b.x || b.x+b.width<=a.x || a.y+a.height<=b.y || b.y+b.height<=a.y,
+                "disjoint ticker coverage");
+        }
+        expect(overlay.render(document,empty_title,1.5,engine,style,17,
+            lyric_renderer,&title_renderer),"remove ticker from held lyric program");
     }
     overlay.reset();
     title_renderer.shutdown();

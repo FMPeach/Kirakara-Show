@@ -516,11 +516,22 @@ int wmain(int argc, wchar_t** argv) {
     auto host = show_host_create();
     expect(host != nullptr, "create ShowHost");
     bool test_hud{};
+    bool test_announcement{};
     for (int i = 9; i < argc; ++i) if (std::wstring_view(argv[i]) == L"--hud") test_hud = true;
+    for (int i = 9; i < argc; ++i) if (std::wstring_view(argv[i]) == L"--announcement") test_announcement = true;
     const ShowHostHudQueueItem upcoming[]{{L"下一首", L"歌手"}, {L"Second song", L"Artist"},
         {L"第三首", L"歌手"}, {L"四首待播歌曲", L"歌手"}};
     ShowHostAudienceHudState hud{sizeof(hud), 1, SHOW_HOST_HUD_QR_ENABLED | SHOW_HOST_HUD_QUEUE_ENABLED,
         4, 1, L"测试网络", upcoming, L"当前播放", L"当前歌手"};
+    if (test_announcement) {
+        if (!test_hud) hud.flags=SHOW_HOST_HUD_ANNOUNCEMENT_ENABLED;
+        else hud.flags |= SHOW_HOST_HUD_ANNOUNCEMENT_ENABLED;
+        ShowHostStageOverlayState text{};
+        text.struct_size=sizeof(text);text.flags=SHOW_STAGE_OVERLAY_ANNOUNCEMENT_VISIBLE;text.revision=1;
+        text.qr_decoration.struct_size=text.announcement_decoration.struct_size=sizeof(ShowHostStageOverlayAsset);
+        text.announcement_text=L"欢迎点歌　·　Show Host 顶部报幕　·　空闲、暂停、换歌均保持独立滚动";
+        expect(show_host_set_audience_hud_state(host,&hud)&&show_host_set_stage_overlay_state(host,&text),"announcement before first media");
+    }
     if (test_hud) {
         const auto com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         const auto image = make_hud_test_image();

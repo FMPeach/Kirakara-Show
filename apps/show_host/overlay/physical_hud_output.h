@@ -6,7 +6,7 @@
 struct HostHudLayers;
 
 // Host-owned small composition layer above the existing Stage HWND output.
-// Both cached tiles are positioned in a single DComp transaction.
+// Cached card, action and announcement tiles share a DComp transaction.
 class PhysicalHudOutput {
 public:
     PhysicalHudOutput();

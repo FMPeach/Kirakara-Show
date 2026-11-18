@@ -540,7 +540,7 @@ int wmain(int argc, wchar_t** argv) {
         "video2 krl2 vocal2 inst2 [--soak-seconds=N] "
         "[--allow-transient-stage-fps] [--texture-only] "
         "[--force-primary-stage] [--exercise-adaptive-preview] "
-        "[--stage-diagnostics]");
+        "[--stage-diagnostics] [--announcement]");
     const auto soak_duration = parse_soak_duration(argc, argv);
     const auto allow_transient_stage_fps = has_argument(
         argc, argv, L"--allow-transient-stage-fps");
@@ -551,6 +551,7 @@ int wmain(int argc, wchar_t** argv) {
         argc, argv, L"--exercise-adaptive-preview");
     const auto stage_diagnostics = has_argument(
         argc, argv, L"--stage-diagnostics");
+    const auto test_announcement = has_argument(argc,argv,L"--announcement");
     if (stage_diagnostics) {
         SetEnvironmentVariableW(
             L"KIRAKARA_NATIVE_STAGE_DIAGNOSTICS", L"1");
@@ -574,6 +575,14 @@ int wmain(int argc, wchar_t** argv) {
     overlay.qr_decoration.struct_size = sizeof(overlay.qr_decoration);
     overlay.announcement_decoration.struct_size =
         sizeof(overlay.announcement_decoration);
+    if(test_announcement) {
+        ShowHostAudienceHudState hud{};
+        hud.struct_size=sizeof(hud);hud.abi_version=SHOW_HOST_AUDIENCE_HUD_ABI_VERSION;
+        hud.flags=SHOW_HOST_HUD_ANNOUNCEMENT_ENABLED;
+        expect(show_host_set_audience_hud_state(host,&hud),"enable independent announcement");
+        overlay.flags=SHOW_STAGE_OVERLAY_ANNOUNCEMENT_VISIBLE;
+        overlay.announcement_text=L"顶部滚动报幕　·　主控预览保持纯净　·　单行纯文本";
+    }
     expect(show_host_set_stage_overlay_state(host, &overlay),
         "disabled Stage overlay state should cross the host ABI");
     expect(show_host_get_stage_overlay_revision(host) == 12,

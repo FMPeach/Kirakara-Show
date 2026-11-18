@@ -165,6 +165,7 @@ const HostHudFrame& HostHudRenderer::render(void* device, std::uint32_t width,
     p.frame.visible = false;
     p.frame.animating = false;
     p.frame.layout_ready = false;
+    p.frame.scene = p.frame.target_scene = HostHudScene::hidden;
     if (!device || !width || !height || !state) return p.frame;
     const bool qr_allowed = state->options.qr_enabled && lan_available && image && image->valid();
     const auto desired = presentation.queue_visible && state->options.queue_enabled ? HostHudScene::queue
@@ -172,6 +173,8 @@ const HostHudFrame& HostHudRenderer::render(void* device, std::uint32_t width,
     const auto appearance = p.transition.update({desired, presentation.program_instance,
         presentation.monotonic_seconds, presentation.transitions_enabled,
         qr_allowed, state->options.queue_enabled});
+    p.frame.scene = appearance.scene;
+    p.frame.target_scene = desired;
     p.frame.opacity = appearance.opacity;
     p.frame.animating = appearance.animating;
     if (appearance.scene == HostHudScene::hidden) return p.frame;

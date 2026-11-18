@@ -5,6 +5,7 @@
 #include <wrl/client.h>
 
 #include <array>
+#include <algorithm>
 
 using Microsoft::WRL::ComPtr;
 struct HostHudBlitter::Impl {
@@ -54,7 +55,7 @@ struct HostHudRetainedBgraLayer::Impl {
         HostHudFrame previous;
     };
     ComPtr<ID2D1DeviceContext> context;
-    std::array<Tile, 2> tiles;
+    std::array<Tile, 3> tiles;
     std::uint64_t captures{};
 };
 HostHudRetainedBgraLayer::HostHudRetainedBgraLayer() : impl_(std::make_unique<Impl>()) {}
@@ -73,21 +74,28 @@ bool HostHudRetainedBgraLayer::apply(void* target, const HostHudLayers& layers,
             tile.underlay.Reset(); tile.previous = {}; tile.blitter.reset();
         }
     }
-    const std::array old{p.tiles[0].previous, p.tiles[1].previous};
-    const std::array next{layers.card, layers.action};
+    const std::array old{p.tiles[0].previous, p.tiles[1].previous, p.tiles[2].previous};
+    const std::array next{layers.card, layers.action, layers.announcement};
     std::array dirty{
         clean_changed || !old[0].same_pixels(next[0]),
         clean_changed || !old[1].same_pixels(next[1]),
+        clean_changed || !old[2].same_pixels(next[2]),
     };
-    if (!dirty[0] && !dirty[1]) return true;
-    if (overlaps(old[0], old[1]) || overlaps(next[0], next[1])
-            || overlaps(old[0], next[1]) || overlaps(next[0], old[1])) {
-        dirty.fill(true);
+    if (std::none_of(dirty.begin(),dirty.end(),[](bool v){return v;})) return true;
+    for (std::size_t i=0;i<next.size();++i) {
+        for (std::size_t j=i+1;j<next.size();++j) {
+            if (overlaps(old[i],old[j]) || overlaps(next[i],next[j])
+                    || overlaps(old[i],next[j]) || overlaps(next[i],old[j])) dirty.fill(true);
+        }
     }
 
-    // Clear every affected old tile before taking either new underlay. The
+    // Clear every affected old tile before taking any new underlay. The
     // taller list may move into the old action position (and vice versa).
-    if (!clean_changed && ((dirty[0] && old[0].visible) || (dirty[1] && old[1].visible))) {
+    bool restore{};
+    for (std::size_t i = 0; i < old.size(); ++i) {
+        restore |= dirty[i] && old[i].visible && p.tiles[i].underlay;
+    }
+    if (!clean_changed && restore) {
         D2D1_MATRIX_3X2_F transform{}; context->GetTransform(&transform);
         const auto blend = context->GetPrimitiveBlend();
         context->SetTransform(D2D1::Matrix3x2F::Identity());
