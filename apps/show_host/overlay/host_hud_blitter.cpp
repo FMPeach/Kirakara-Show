@@ -6,6 +6,7 @@
 
 #include <array>
 #include <algorithm>
+#include <initializer_list>
 
 using Microsoft::WRL::ComPtr;
 struct HostHudBlitter::Impl {
@@ -137,7 +138,8 @@ bool HostHudRetainedBgraLayer::apply(void* target, const HostHudLayers& layers,
             ++p.captures;
         }
     }
-    for (std::size_t i = 0; i < next.size(); ++i) {
+    // Match the physical output: announcement below card, action above card.
+    for (const auto i : {std::size_t{2}, std::size_t{0}, std::size_t{1}}) {
         if (!dirty[i] || !next[i].visible) continue;
         if (!p.tiles[i].blitter.draw(context, next[i])) return false;
         p.tiles[i].previous = next[i];

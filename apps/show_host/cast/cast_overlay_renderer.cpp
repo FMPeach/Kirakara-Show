@@ -5,6 +5,7 @@
 #include "kirakara/show/timeline.hpp"
 
 #include <algorithm>
+#include <initializer_list>
 #include <bit>
 #include <cmath>
 #include <limits>
@@ -447,7 +448,9 @@ struct CastOverlayRenderer::Impl {
                 return false;
             }
         }
-        for (std::size_t i = 0; i < tiles.size(); ++i) {
+        // A fading full-width announcement can briefly overlap an incoming
+        // card. Keep the same stacking order as the physical DComp output.
+        for (const auto i : {std::size_t{2}, std::size_t{0}, std::size_t{1}}) {
             if (dirty[i + 1] && !hud_blitters[i].draw(surface.native_render_target(), tiles[i])) return false;
         }
         surface.flush_d2d();

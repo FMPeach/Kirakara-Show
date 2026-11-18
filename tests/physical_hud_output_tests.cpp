@@ -85,6 +85,18 @@ int main() {
         expect(output.submissions()==4,"unchanged announcement does not copy");
         ++layers.announcement.revision;
         expect(output.present(layers)&&output.submissions()==5,"only announcement content is presented");
+        for(const auto alpha:{0.F,.25F,.5F,1.F}) {
+            layers.announcement.opacity=alpha;
+            expect(output.present(layers)&&output.submissions()==5,
+                "whole-strip opacity never copies or presents cached pixels again");
+        }
+        layers.card={card.native_texture(),20,20,100,60,20,true};
+        layers.action={card.native_texture(),30,30,100,60,30,true};
+        expect(output.present(layers),"card and action may join after the announcement");
+        const auto overlap_submissions=output.submissions();
+        layers.announcement.opacity=.5F;
+        expect(output.present(layers)&&output.submissions()==overlap_submissions,
+            "overlapping DComp layers retain their pixels during the strip fade");
         expect(output.present({}),"remove announcement without changing base");
         expect(renderer.rendered_frames() == 1 && !preview.peek_latest(),
             "HUD changes never render or publish clean preview frames");

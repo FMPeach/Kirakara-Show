@@ -171,10 +171,12 @@ struct PhysicalHudOutput::Impl {
             dirty = true;
         }
         if (!layer.visible) {
-            const auto* reference = &layer == &action ? &main
-                : &layer == &announcement && main.visible ? &main : &action;
-            // The action sits above the main card if their edges ever meet.
-            if (!check(root->AddVisual(layer.visual.Get(), &layer == &action,
+            const auto* reference = &layer == &announcement ? (main.visible ? &main : &action)
+                : &layer == &main ? (action.visible ? &action : &announcement)
+                : (main.visible ? &main : &announcement);
+            const bool above = &layer == &action || (&layer == &main && !action.visible);
+            // Keep announcement < card < action regardless of which appears first.
+            if (!check(root->AddVisual(layer.visual.Get(), above,
                     reference->visible ? reference->visual.Get() : nullptr))) return false;
             layer.visible = true;
             dirty = true;

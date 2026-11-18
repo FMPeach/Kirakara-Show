@@ -7,6 +7,7 @@
 #include <psapi.h>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -58,7 +59,8 @@ int main(int argc,char** argv) {
         card.layout_ready=true;card.scene=HostHudScene::qr;
         expect(!ticker.render(gpu,1920,1080,&text,false,card,100).visible&&ticker.layouts()==0,"disabled has no layout work");
         auto first=ticker.render(gpu,1920,1080,&text,true,card,100);
-        expect(first.visible&&first.x==50&&first.y==40&&first.width==1280&&first.height==72,"QR avoidance geometry");
+        expect(first.layout_ready&&!first.visible&&first.opacity==0&&first.animating
+            &&first.x==50&&first.y==40&&first.width==1280&&first.height==72,"QR avoidance geometry starts at zero opacity");
         const auto initial=read(gpu,first);
         expect(*std::max_element(initial.begin(),initial.end())<200,"intro contains only translucent background");
         const auto moving=ticker.render(gpu,1920,1080,&text,true,card,111);
@@ -74,15 +76,21 @@ int main(int argc,char** argv) {
         card.scene=HostHudScene::queue;
         auto draws=ticker.rasterizations();
         text.text=L"在列表隐藏期间更新的公告"; ++text.submission;
-        expect(!ticker.render(gpu,1920,1080,&text,true,card,113).visible
+        expect(ticker.render(gpu,1920,1080,&text,true,card,113).visible
             &&ticker.layouts()==1&&ticker.rasterizations()==draws,"hidden queue does not measure or draw");
+        const auto outgoing=ticker.render(gpu,1920,1080,&text,true,card,113.075);
+        expect(std::abs(outgoing.opacity-.5F)<.0001F&&outgoing.animating
+            &&ticker.rasterizations()==draws,"queue handoff fades cached strip in 150ms");
+        expect(!ticker.render(gpu,1920,1080,&text,true,card,113.15).visible
+            &&ticker.rasterizations()==draws,"queue takeover completes without more text work");
         card={};
         auto wide=ticker.render(gpu,1920,1080,&text,true,card,114);
-        expect(wide.visible&&wide.width==1820&&ticker.layouts()==2,"hidden update revealed at full width");
+        expect(wide.layout_ready&&wide.opacity==0&&wide.width==1820&&ticker.layouts()==2,"hidden update fades in at full width");
         const auto wide_initial=read(gpu,wide);
         expect(read(gpu,ticker.render(gpu,1920,1080,&text,true,card,115))!=wide_initial,"idle text moves without media");
         card.target_scene=HostHudScene::queue;
-        expect(!ticker.render(gpu,1920,1080,&text,true,card,116).visible,"queue handoff hides before its fade");
+        expect(ticker.render(gpu,1920,1080,&text,true,card,116).animating,"queue handoff starts strip fade-out");
+        expect(!ticker.render(gpu,1920,1080,&text,true,card,116.15).visible,"strip is hidden before incoming list settles");
         card={};
         text.text=L"　 \t";++text.submission;
         draws=ticker.rasterizations();
@@ -91,7 +99,7 @@ int main(int argc,char** argv) {
         for (const auto size : {std::pair{640U,360U}, {960U,540U}, {720U,576U}, {1280U,720U}, {3840U,2160U}}) {
             text.text=L"m　·　あ　·　A"; ++text.submission;
             auto f=ticker.render(gpu,size.first,size.second,&text,true,{},120);
-            expect(f.visible&&f.x+f.width<=size.first&&f.y+f.height<=size.second,"scaled bounds");
+            expect(f.layout_ready&&f.x+f.width<=size.first&&f.y+f.height<=size.second,"scaled bounds");
             auto v=read(gpu,f);
             expect(v[3]==0&&v[(f.width-1)*4+3]==0,"rounded corners remain transparent");
         }
@@ -102,6 +110,31 @@ int main(int argc,char** argv) {
         expect(ticker.render(gpu,1920,1080,&text,true,{},140).visible,"single glyph");
         auto long_run=ticker.render(gpu,1920,1080,&text,true,{},140+86400.*20);
         expect(long_run.visible,"long-running short text");
+
+        {
+            HostAnnouncementRenderer single;
+            const HostAnnouncementText short_text{1,true,L"TEST"};
+            const auto intro=read(gpu,single.render(gpu,1920,1080,&short_text,true,{},500));
+            const auto length=single.text_width();
+            const auto period=(1820+length)/62;
+            const auto middle=single.render(gpu,1920,1080,&short_text,true,{},500+period*.5);
+            const auto pixels=read(gpu,middle);
+            std::uint32_t min_x=middle.width,max_x=0;
+            for(std::uint32_t y=0;y<middle.height;++y) for(std::uint32_t x=0;x<middle.width;++x) {
+                const auto i=(static_cast<std::size_t>(y)*middle.width+x)*4;
+                if(pixels[i]>100 || pixels[i+1]>100 || pixels[i+2]>100) {
+                    min_x=std::min(min_x,x);max_x=std::max(max_x,x);
+                }
+            }
+            expect(min_x<=max_x && min_x>=(1820-length)*.5-2
+                &&max_x<=(1820+length)*.5+2,
+                "short text appears only once, centered halfway through its pass");
+            for(const auto offset:{period-.01,period,period+.01,2*period+.01}) {
+                expect(read(gpu,single.render(gpu,1920,1080,&short_text,true,{},500+offset))==intro,
+                    "cycle boundary has neither an old tail nor a prematurely repeated head");
+            }
+            expect(single.layouts()==1,"looping one line preserves its cached text layout");
+        }
 
         {
             HostAnnouncementRenderer updates;
@@ -121,8 +154,70 @@ int main(int argc,char** argv) {
             D3D11TextureSurface replacement;
             expect(replacement.resize(16,16),"replacement device");
             const auto before=updates.layouts();
-            expect(updates.render(replacement.native_d3d_device(),1920,1080,&value,true,{},200).visible
+            expect(updates.render(replacement.native_d3d_device(),1920,1080,&value,true,{},200).layout_ready
                 &&updates.layouts()==before,"device recovery preserves device-independent layout");
+        }
+
+        {
+            HostAnnouncementRenderer fade;
+            HostAnnouncementText message{1,true,L"整块报幕复用浮窗淡化时间"};
+            auto f=fade.render(gpu,1920,1080,&message,true,{},1000);
+            expect(f.opacity==0&&!f.visible&&f.animating,"first reveal fades from transparent");
+            f=fade.render(gpu,1920,1080,&message,true,{},1000.075);
+            expect(std::abs(f.opacity-.5F)<.0001F,"whole strip is half visible after 75ms");
+            ++message.submission;
+            f=fade.render(gpu,1920,1080,&message,true,{},1000.1);
+            expect(std::abs(f.opacity-2.F/3)<.0001F&&fade.layouts()==1,
+                "same text resubmission does not restart component fade-in");
+            f=fade.render(gpu,1920,1080,&message,true,{},1000.15);
+            expect(f.opacity==1&&f.visible,"fade-in completes at the shared 150ms boundary");
+            const auto pixels=read(gpu,f);
+            const auto draws=fade.rasterizations();
+            const auto revision=f.revision;
+            fade.render(gpu,1920,1080,&message,false,{},1001);
+            f=fade.render(gpu,1920,1080,&message,false,{},1001.075);
+            expect(std::abs(f.opacity-.5F)<.0001F&&f.animating&&f.revision==revision
+                &&fade.rasterizations()==draws&&read(gpu,f)==pixels,
+                "fade-out changes only composition opacity of the cached whole strip");
+            f=fade.render(gpu,1920,1080,&message,true,{},1001.1);
+            expect(std::abs(f.opacity-1.F/3)<.0001F,"interrupted fade reverses from its current opacity");
+            f=fade.render(gpu,1920,1080,&message,true,{},1001.25);
+            expect(f.opacity==1,"re-enabled strip settles after one fade duration");
+            message.text=L"　 \t";++message.submission;
+            fade.render(gpu,1920,1080,&message,true,{},1002);
+            const auto blank_draws=fade.rasterizations();
+            f=fade.render(gpu,1920,1080,&message,true,{},1002.15);
+            expect(!f.visible&&!f.animating&&fade.rasterizations()==blank_draws&&fade.layouts()==1,
+                "blank text finishes fade-out without shaping or drawing");
+        }
+
+        {
+            HostHudRenderer cards;
+            HostAnnouncementRenderer linked;
+            auto image=make_hud_test_image();
+            HostHudState state;state.options.qr_enabled=state.options.queue_enabled=true;
+            HostAnnouncementText message{1,true,L"报幕与二维码同步显隐"};
+            HostHudPresentation phase{false,0,1,2000,true};
+            const auto sample=[&](double now,bool queue) {
+                phase.monotonic_seconds=now;phase.queue_visible=queue;
+                const auto card=cards.render(gpu,1920,1080,&state,image,true,phase);
+                return std::pair{card,linked.render(gpu,1920,1080,&message,true,card,now)};
+            };
+            sample(2000,false);sample(2000.15,false);
+            sample(2001,true);
+            auto pair=sample(2001.075,true);
+            expect(std::abs(pair.first.opacity-pair.second.opacity)<.0001F,
+                "QR and announcement share the outgoing 150ms fade");
+            pair=sample(2001.15,true);
+            expect(!pair.second.visible,"announcement is gone at the QR-to-list midpoint");
+            sample(2002,false);pair=sample(2002.15,false);
+            expect(pair.first.opacity==0&&pair.second.opacity==0,"both incoming components start transparent");
+            pair=sample(2002.225,false);
+            expect(std::abs(pair.first.opacity-.5F)<.0001F
+                &&std::abs(pair.first.opacity-pair.second.opacity)<.0001F,
+                "QR and announcement share the incoming 150ms fade");
+            pair=sample(2002.3,false);
+            expect(pair.first.opacity==1&&pair.second.opacity==1,"both components finish together");
         }
 
         {
@@ -150,6 +245,39 @@ int main(int argc,char** argv) {
             expect(retained.captures()==1,"held video underlay captured once");
             expect(retained.apply(held.native_render_target(),{},false,changed)
                 &&held.read_rgba8()==clean,"hiding ticker restores exact original frame");
+        }
+
+        {
+            D3D11TextureSurface held,reference,red,green,blue;
+            expect(held.resize_on_device(gpu,640,360)&&reference.resize_on_device(gpu,640,360)
+                &&red.resize_on_device(gpu,100,30)&&green.resize_on_device(gpu,100,30)
+                &&blue.resize_on_device(gpu,100,30),"overlapping HUD surfaces");
+            const auto fill=[](D3D11TextureSurface& surface,kirakara::show::Color color) {
+                surface.begin_draw();surface.clear(color);
+                expect(surface.end_draw(),"solid overlapping tile");surface.flush_d2d();
+            };
+            fill(red,{1,0,0,1});fill(green,{0,1,0,1});fill(blue,{0,0,1,1});
+            fill(held,{.2F,.3F,.4F,1});
+            HostHudLayers layers;
+            layers.announcement={blue.native_texture(),20,20,100,30,1,true};
+            layers.card={red.native_texture(),30,25,50,20,1,true};
+            layers.action={green.native_texture(),40,30,20,10,1,true};
+            HostHudRetainedBgraLayer retained;
+            HostHudBlitter ann,card,action;
+            bool changed{},first=true;
+            for(const auto alpha:{1.F,.5F,0.F}) {
+                layers.announcement.opacity=alpha;
+                layers.announcement.visible=alpha>0;
+                expect(retained.apply(held.native_render_target(),layers,first,changed)&&changed,
+                    "Cast C fades the announcement under an incoming card");
+                first=false;fill(reference,{.2F,.3F,.4F,1});
+                expect(ann.draw(reference.native_render_target(),layers.announcement)
+                    &&card.draw(reference.native_render_target(),layers.card)
+                    &&action.draw(reference.native_render_target(),layers.action),"reference HUD order");
+                expect(held.read_rgba8()==reference.read_rgba8(),
+                    "card and action remain above a fading strip without accumulated alpha");
+            }
+            expect(retained.captures()==3,"overlap fading reuses all three clean underlays");
         }
 
         if(argc>1 && std::string_view(argv[1])!="--soak-seconds") {

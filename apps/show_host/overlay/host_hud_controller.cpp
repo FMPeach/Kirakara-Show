@@ -77,7 +77,7 @@ HostHudPresentation HostHudController::update(const HostHudClockInput& in) {
 }
 
 HostHudAppearance HostHudTransition::evaluate(double now) {
-    constexpr double fade_seconds = .150;
+    constexpr double fade_seconds = kHostHudFadeSeconds;
     auto elapsed = std::max(0.0, now - started_);
     if (phase_ == Phase::fade_out && elapsed + 1e-9 >= fade_seconds) {
         current_ = target_;

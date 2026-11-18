@@ -20,7 +20,10 @@ struct HostAnnouncementRenderer::Impl {
     ComPtr<ID2D1SolidColorBrush> border;
     std::wstring text;
     AnnouncementScroll scroll;
-    HostHudFrame frame;
+    HostHudFrame frame{.opacity=0};
+    double fade_started{}, fade_last_now{};
+    float fade_from{};
+    bool fade_target{};
     void* device{};
     float scale{};
     double measured_width{};
@@ -28,6 +31,23 @@ struct HostAnnouncementRenderer::Impl {
     std::uint64_t prepared_submission{};
     bool prepared{}, blank{};
     std::uint64_t layout_count{}, draw_count{};
+
+    void update_opacity(bool show, double now) noexcept {
+        if (now < fade_last_now) {
+            fade_from = frame.opacity;
+            fade_started = now;
+        }
+        const auto elapsed = std::max(0.0, now - fade_started);
+        const float fraction = elapsed + 1e-9 >= kHostHudFadeSeconds ? 1.0F
+            : static_cast<float>(elapsed / kHostHudFadeSeconds);
+        frame.opacity = fade_from + ((fade_target ? 1.0F : 0.0F) - fade_from) * fraction;
+        if (show != fade_target) {
+            fade_from = frame.opacity;
+            fade_target = show;
+            fade_started = now;
+        }
+        fade_last_now = now;
+    }
 
     bool measure(const std::wstring& value) {
         if (layout && text == value) return true;
@@ -88,8 +108,12 @@ HostAnnouncementRenderer::HostAnnouncementRenderer() : impl_(std::make_unique<Im
 HostAnnouncementRenderer::~HostAnnouncementRenderer() = default;
 void HostAnnouncementRenderer::reset() { impl_ = std::make_unique<Impl>(); }
 void HostAnnouncementRenderer::hide() noexcept {
-    impl_->scroll.hide();
-    impl_->frame.visible = impl_->frame.animating = false;
+    auto& p = *impl_;
+    p.scroll.hide();
+    p.frame.visible = p.frame.animating = p.frame.layout_ready = false;
+    p.frame.opacity = p.fade_from = 0;
+    p.fade_target = false;
+    p.fade_started = p.fade_last_now = 0;
 }
 std::uint64_t HostAnnouncementRenderer::layouts() const noexcept { return impl_->layout_count; }
 std::uint64_t HostAnnouncementRenderer::rasterizations() const noexcept { return impl_->draw_count; }
@@ -100,23 +124,37 @@ const HostHudFrame& HostAnnouncementRenderer::render(void* device, std::uint32_t
         std::uint32_t height, const HostAnnouncementText* value, bool enabled,
         const HostHudFrame& card, double now) {
     auto& p = *impl_;
-    p.frame.visible = p.frame.animating = p.frame.layout_ready = false;
-    if (!device || !width || !height || !enabled || !value || !value->visible
-            || value->text.empty() || value->text.size() > kHostAnnouncementMaxTextUnits
-            || card.scene == HostHudScene::queue || card.target_scene == HostHudScene::queue
-            || !std::isfinite(now)) {
-        p.scroll.hide();
+    if (!device || !width || !height || !std::isfinite(now)) {
+        hide();
         return p.frame;
     }
-    if (!p.prepared || p.prepared_submission != value->submission) {
+    if (p.device && p.device != device) hide();
+    const bool requested = enabled && value && value->visible && !value->text.empty()
+        && value->text.size() <= kHostAnnouncementMaxTextUnits
+        && card.scene != HostHudScene::queue && card.target_scene != HostHudScene::queue;
+    if (requested && (!p.prepared || p.prepared_submission != value->submission)) {
         p.blank = std::all_of(value->text.begin(), value->text.end(),
             [](wchar_t c) { return std::iswspace(c) != 0; });
-        if (!p.blank && !p.measure(value->text)) return p.frame;
+        if (!p.blank && !p.measure(value->text)) {
+            hide();
+            return p.frame;
+        }
         p.prepared_submission = value->submission;
         p.prepared = true;
     }
-    if (p.blank) {
+    if (!requested || p.blank) {
+        if (static_cast<std::uint64_t>(p.frame.x) + p.frame.width > width
+                || static_cast<std::uint64_t>(p.frame.y) + p.frame.height > height) {
+            hide();
+            return p.frame;
+        }
+        // Fade the entire cached strip. No text layout or bitmap redraw is
+        // needed while its last visible pixels leave the audience output.
+        p.update_opacity(false, now);
         p.scroll.hide();
+        p.frame.visible = p.frame.layout_ready && p.frame.opacity > 0;
+        p.frame.animating = p.frame.visible;
+        if (!p.frame.visible) p.frame.layout_ready = false;
         return p.frame;
     }
     const float scale = host_hud_scale(width, height);
@@ -125,13 +163,19 @@ const HostHudFrame& HostAnnouncementRenderer::render(void* device, std::uint32_t
         ? card.x - std::min(card.x, static_cast<std::uint32_t>(std::round(40 * scale)))
         : width - std::min(width, left);
     if (right <= left || scale <= 0 || (right-left)/scale < 272) {
-        p.scroll.hide();
+        hide();
         return p.frame;
     }
     if (!p.target(device, right-left,
-            static_cast<std::uint32_t>(std::ceil(72*scale)), scale)) return p.frame;
-    const auto copies = p.scroll.sample(value->submission, (right-left)/scale, p.measured_width, now);
-    if (!copies.count) return p.frame;
+            static_cast<std::uint32_t>(std::ceil(72*scale)), scale)) {
+        hide();
+        return p.frame;
+    }
+    const auto position = p.scroll.sample(value->submission, (right-left)/scale, p.measured_width, now);
+    if (!position.valid) {
+        hide();
+        return p.frame;
+    }
     auto* context = static_cast<ID2D1DeviceContext*>(p.surface.native_render_target());
     context->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale));
     context->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
@@ -142,18 +186,21 @@ const HostHudFrame& HostAnnouncementRenderer::render(void* device, std::uint32_t
     context->FillRoundedRectangle(rect, p.background.Get());
     context->DrawRoundedRectangle(rect, p.border.Get(), 1);
     context->PushAxisAlignedClip(D2D1::RectF(0,0,logical_width,72),D2D1_ANTIALIAS_MODE_ALIASED);
-    for (std::size_t i=0;i<copies.count;++i) {
-        const auto x = copies.x(i);
-        if (x >= logical_width || x+p.measured_width <= 0) continue;
-        context->DrawTextLayout({static_cast<float>(x),p.text_y},p.layout.Get(),p.ink.Get());
+    if (position.x < logical_width && position.x + p.measured_width > 0) {
+        context->DrawTextLayout({static_cast<float>(position.x),p.text_y},p.layout.Get(),p.ink.Get());
     }
     context->PopAxisAlignedClip();
-    if (!p.surface.end_draw()) return p.frame;
+    if (!p.surface.end_draw()) {
+        hide();
+        return p.frame;
+    }
     p.surface.flush_d2d();
     p.frame.texture=p.surface.native_texture();
     p.frame.x=left; p.frame.y=static_cast<std::uint32_t>(std::round(40*scale));
     p.frame.width=right-left; p.frame.height=p.surface.height();
     p.frame.revision=++p.draw_count;
-    p.frame.visible=p.frame.layout_ready=p.frame.animating=true;
+    p.update_opacity(true, now);
+    p.frame.visible=p.frame.opacity>0;
+    p.frame.layout_ready=p.frame.animating=true;
     return p.frame;
 }

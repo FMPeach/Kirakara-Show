@@ -2,6 +2,8 @@
 #include <cstdint>
 #include <mutex>
 
+inline constexpr double kHostHudFadeSeconds = .150;
+
 struct HostHudClockInput {
     std::uint64_t program_instance{};
     std::uint64_t discontinuity_revision{};

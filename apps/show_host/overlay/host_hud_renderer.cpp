@@ -351,7 +351,7 @@ const HostHudFrame& HostHudRenderer::render(void* device, std::uint32_t width,
     }
     if (p.queue_blending) {
         const auto fraction = static_cast<float>(std::clamp(
-            (presentation.monotonic_seconds - p.queue_blend_started) / .150, 0.0, 1.0));
+            (presentation.monotonic_seconds - p.queue_blend_started) / kHostHudFadeSeconds, 0.0, 1.0));
         if (fraction != p.queue_blend_fraction
                 && !p.blend_queue(static_cast<ID2D1DeviceContext*>(p.surface.native_render_target()), scale, fraction)) {
             p.cached = false; return p.frame;

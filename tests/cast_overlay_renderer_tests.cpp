@@ -454,6 +454,30 @@ int main() {
         expect(overlay.render(document,empty_title,1.5,engine,style,17,
             lyric_renderer,&title_renderer),"remove ticker from held lyric program");
     }
+    {
+        kirakara::show::win32::D3D11TextureSurface red,green,blue;
+        expect(red.resize_on_device(device,100,30)&&green.resize_on_device(device,100,30)
+            &&blue.resize_on_device(device,100,30),"overlapping Cast A tiles");
+        const auto fill=[](auto& surface,Color color) {
+            surface.begin_draw();surface.clear(color);
+            expect(surface.end_draw(),"solid Cast A tile");surface.flush_d2d();
+        };
+        fill(red,{1,0,0,1});fill(green,{0,1,0,1});fill(blue,{0,0,1,1});
+        HostHudLayers layers;
+        layers.announcement={blue.native_texture(),10,10,100,30,1,true};
+        layers.card={red.native_texture(),15,15,30,10,1,true};
+        layers.action={green.native_texture(),20,15,10,10,1,true};
+        for(const auto alpha:{1.F,.5F,0.F}) {
+            layers.announcement.opacity=alpha;layers.announcement.visible=alpha>0;
+            expect(overlay.render(empty_document,empty_title,1.5,engine,style,18,
+                lyric_renderer,&title_renderer,&layers),"fading Cast A strip under a card");
+            const auto pixels=read_bgra(device,context,static_cast<ID3D11Texture2D*>(overlay.frame().texture));
+            const auto card_pixel=(16*320+16)*4,action_pixel=(16*320+22)*4;
+            expect(pixels[card_pixel]==0&&pixels[card_pixel+2]==255
+                &&pixels[action_pixel+1]==255&&pixels[action_pixel+2]==0,
+                "Cast A keeps card and action above the fading announcement");
+        }
+    }
     overlay.reset();
     title_renderer.shutdown();
     lyric_renderer.shutdown();
